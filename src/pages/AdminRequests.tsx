@@ -1,12 +1,11 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../hooks/useAuth';
-import type { Talep, Kayit } from '../types';
+import type { Talep } from '../types';
 import MainLayout from '../components/layout/MainLayout';
 import { 
   CheckCircle2, 
   XCircle, 
-  Clock, 
   ArrowRight, 
   Trash2, 
   Pencil,

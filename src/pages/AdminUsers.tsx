@@ -14,7 +14,7 @@ import {
   Eye,
   EyeOff
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+
 
 interface SubeCode {
   id: string;

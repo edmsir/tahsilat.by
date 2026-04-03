@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../hooks/useAuth';
-import type { Hedef, Sube } from '../types';
+import type { Sube } from '../types';
 import MainLayout from '../components/layout/MainLayout';
 import { 
   Target, 
