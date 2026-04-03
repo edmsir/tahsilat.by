@@ -1,5 +1,5 @@
 import { useAuth } from '../../hooks/useAuth';
-import { LogOut, LayoutDashboard, FileSpreadsheet, UserCircle, Menu, X, PlusCircle, Target, Users } from 'lucide-react';
+import { LogOut, LayoutDashboard, FileSpreadsheet, UserCircle, Menu, X, PlusCircle, Target, Users, CalendarClock } from 'lucide-react';
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Link, useLocation } from 'react-router-dom';
@@ -17,6 +17,7 @@ export default function Navbar() {
     { name: 'Raporlar', icon: FileSpreadsheet, path: '/reports', role: 'admin' },
     { name: 'Talepler', icon: PlusCircle, path: '/requests', role: 'admin' },
     { name: 'Hedefler', icon: Target, path: '/targets', role: 'admin' },
+    { name: 'Ödemeler', icon: CalendarClock, path: '/payments', role: 'admin' },
     { name: 'Kullanıcılar', icon: Users, path: '/users', role: 'admin' },
   ];
 

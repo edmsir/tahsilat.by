@@ -66,6 +66,44 @@ export default function AdminRequests() {
           .update(talep.yeni_veri)
           .eq('id', talep.kayit_id);
         if (updError) throw updError;
+
+        // RECALCULATE PAYMENT PLAN IF POS
+        const updatedRecord = { ...talep.kayitlar, ...talep.yeni_veri };
+        if (updatedRecord.banka?.includes('POS')) {
+          try {
+            const { data: bankSettings } = await supabase
+              .from('banka_ayarlari')
+              .select('*')
+              .eq('banka_adi', updatedRecord.banka)
+              .single();
+            
+            const { data: holidaysData } = await supabase
+              .from('tatil_gunleri')
+              .select('tarih');
+            
+            if (bankSettings && holidaysData) {
+              const holidayList = holidaysData.map(h => h.tarih);
+              const { generatePaymentSchedule } = await import('../utils/paymentCalculator');
+              const schedule = generatePaymentSchedule(updatedRecord as any, bankSettings, holidayList);
+
+              await supabase.from('odeme_plani').delete().eq('kayit_id', talep.kayit_id);
+              
+              const scheduleToInsert = schedule.map(s => ({
+                kayit_id: talep.kayit_id,
+                taksit_no: s.taksit_no,
+                planlanan_tarih: s.planlanan_tarih,
+                net_tutar: s.net_tutar,
+                komisyon_tutar: s.komisyon_tutar,
+                ana_tutar: s.ana_tutar,
+                durum: 'BEKLEMEDE'
+              }));
+
+              await supabase.from('odeme_plani').insert(scheduleToInsert);
+            }
+          } catch (err) {
+            console.error('Failed to update payment plan after approval:', err);
+          }
+        }
       }
 
       // Update request status

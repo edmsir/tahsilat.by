@@ -65,3 +65,31 @@ export interface Hedef {
   yil: number;
   created_at: string;
 }
+
+export interface BankSettings {
+  id?: string;
+  banka_adi: string;
+  vade_gun: number;
+  komisyon_oranlari: Record<string, number>;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface BankHoliday {
+  id?: string;
+  tarih: string;
+  aciklama: string;
+}
+
+export interface PaymentPlanItem {
+  id?: string;
+  kayit_id: string;
+  taksit_no: number;
+  planlanan_tarih: string;
+  net_tutar: number;
+  komisyon_tutar: number;
+  ana_tutar: number;
+  durum: 'BEKLEMEDE' | 'YATTI';
+  created_at?: string;
+  kayitlar?: Kayit;
+}

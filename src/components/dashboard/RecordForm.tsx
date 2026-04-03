@@ -111,6 +111,70 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
       }
       
       if (onSuccess) onSuccess();
+
+      // IF POS: Generate and Save Payment Schedule
+      if (data.banka.includes('POS')) {
+        try {
+          // 1. Fetch Bank Settings
+          const { data: bankSettings, error: bankError } = await supabase
+            .from('banka_ayarlari')
+            .select('*')
+            .eq('banka_adi', data.banka)
+            .single();
+          
+          if (bankError) throw bankError;
+
+          // 2. Fetch Holidays
+          const { data: holidaysData, error: holidayError } = await supabase
+            .from('tatil_gunleri')
+            .select('tarih');
+          
+          if (holidayError) throw holidayError;
+          const holidayList = holidaysData.map(h => h.tarih);
+
+          // 3. Generate Schedule
+          const { generatePaymentSchedule } = await import('../../utils/paymentCalculator');
+          const schedule = generatePaymentSchedule(data, bankSettings, holidayList);
+
+          // 4. Save to Database (First find the record ID if it's new)
+          let finalRecordId = isEditing ? initialData.id : null;
+          
+          if (!isEditing) {
+            // Get the ID of the record just inserted
+            const { data: newRecord, error: fetchError } = await supabase
+              .from('kayitlar')
+              .select('id')
+              .eq('user_id', user?.id)
+              .order('created_at', { ascending: false })
+              .limit(1)
+              .single();
+            if (!fetchError) finalRecordId = newRecord.id;
+          }
+
+          if (finalRecordId) {
+            // Delete old schedule if editing
+            if (isEditing) {
+              await supabase.from('odeme_plani').delete().eq('kayit_id', finalRecordId);
+            }
+
+            // Insert new schedule
+            const scheduleToInsert = schedule.map(s => ({
+              kayit_id: finalRecordId,
+              taksit_no: s.taksit_no,
+              planlanan_tarih: s.planlanan_tarih,
+              net_tutar: s.net_tutar,
+              komisyon_tutar: s.komisyon_tutar,
+              ana_tutar: s.ana_tutar,
+              durum: 'BEKLEMEDE'
+            }));
+
+            await supabase.from('odeme_plani').insert(scheduleToInsert);
+          }
+        } catch (scheduleErr) {
+          console.error('Payment schedule generation failed:', scheduleErr);
+        }
+      }
+
       setTimeout(() => setSuccess(false), 2000);
     } catch (error: any) {
       console.error('Error saving record:', error);

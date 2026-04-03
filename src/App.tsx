@@ -6,6 +6,7 @@ import Reports from './pages/Reports';
 import AdminRequests from './pages/AdminRequests';
 import AdminTargets from './pages/AdminTargets';
 import AdminUsers from './pages/AdminUsers';
+import AdminPayments from './pages/AdminPayments';
 import { Loader2 } from 'lucide-react';
 
 function AppContent() {
@@ -30,6 +31,7 @@ function AppContent() {
       <Route path="/requests" element={(user && user.user_metadata?.role === 'admin') ? <AdminRequests /> : <Navigate to="/" />} />
       <Route path="/targets" element={(user && user.user_metadata?.role === 'admin') ? <AdminTargets /> : <Navigate to="/" />} />
       <Route path="/users" element={(user && user.user_metadata?.role === 'admin') ? <AdminUsers /> : <Navigate to="/" />} />
+      <Route path="/payments" element={(user && user.user_metadata?.role === 'admin') ? <AdminPayments /> : <Navigate to="/" />} />
       <Route path="*" element={<Navigate to="/" />} />
     </Routes>
   );
