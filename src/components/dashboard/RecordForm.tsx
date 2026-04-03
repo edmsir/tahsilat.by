@@ -44,7 +44,7 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
   const metadataSube = user?.user_metadata?.sube as Sube;
   const currentSube: Sube = isEditing ? (initialData.sube_adi as Sube) : ((role === 'admin' || !metadataSube) ? 'MERKEZ' : metadataSube);
 
-  const { register, handleSubmit, reset, formState: { errors } } = useForm<FormValues>({
+  const { register, handleSubmit, reset, watch, setValue, formState: { errors } } = useForm<FormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: {
       tarih: new Date().toISOString().split('T')[0],
@@ -53,6 +53,53 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
       taksit: 1,
     }
   });
+
+  const [loadingSettings, setLoadingSettings] = useState(false);
+  const [availableInstallments, setAvailableInstallments] = useState<number[]>([1]);
+  const selectedBanka = watch('banka');
+  const selectedTarih = watch('tarih');
+
+  useEffect(() => {
+    const fetchBankSettings = async () => {
+      if (!selectedBanka || !selectedBanka.includes('POS')) {
+        setAvailableInstallments([1]);
+        setValue('taksit', 1);
+        return;
+      }
+
+      setLoadingSettings(true);
+      try {
+        const { data: bankSettings } = await supabase
+          .from('banka_ayarlari')
+          .select('komisyon_oranlari')
+          .eq('banka_adi', selectedBanka)
+          .lte('baslangic_tarihi', selectedTarih)
+          .or(`bitis_tarihi.is.null,bitis_tarihi.gte.${selectedTarih}`)
+          .order('baslangic_tarihi', { ascending: false })
+          .limit(1)
+          .single();
+
+        if (bankSettings && bankSettings.komisyon_oranlari) {
+          const rates = bankSettings.komisyon_oranlari;
+          // Sort keys numerically
+          const insts = Array.from(new Set(['1', '2', '3', '4', '5', '6', '7', '8', '9', ...Object.keys(rates)]))
+            .map(k => parseInt(k))
+            .sort((a, b) => a - b);
+          
+          setAvailableInstallments(insts);
+        } else {
+          // Default 1-9 for new banks or if no agreement matches yet
+          setAvailableInstallments([1,2,3,4,5,6,7,8,9]);
+        }
+      } catch (err) {
+        setAvailableInstallments([1,2,3,4,5,6,7,8,9]);
+      } finally {
+        setLoadingSettings(false);
+      }
+    };
+
+    fetchBankSettings();
+  }, [selectedBanka, selectedTarih, setValue]);
 
   useEffect(() => {
     if (initialData) {
@@ -115,14 +162,21 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
       // IF POS: Generate and Save Payment Schedule
       if (data.banka.includes('POS')) {
         try {
-          // 1. Fetch Bank Settings
+          // 1. Fetch Bank Settings (Agreement active on transaction date)
           const { data: bankSettings, error: bankError } = await supabase
             .from('banka_ayarlari')
             .select('*')
             .eq('banka_adi', data.banka)
+            .lte('baslangic_tarihi', data.tarih)
+            .or(`bitis_tarihi.is.null,bitis_tarihi.gte.${data.tarih}`)
+            .order('baslangic_tarihi', { ascending: false })
+            .limit(1)
             .single();
           
-          if (bankError) throw bankError;
+          if (bankError) {
+              console.warn('Matching bank agreement not found for date:', data.tarih);
+              throw bankError;
+          }
 
           // 2. Fetch Holidays
           const { data: holidaysData, error: holidayError } = await supabase
@@ -256,12 +310,42 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
 
           <div className="space-y-1">
             <label className="text-[10px] uppercase font-bold text-muted-foreground ml-1">Taksit</label>
-            <input
-              type="number"
-              placeholder="1"
-              {...register('taksit', { valueAsNumber: true })}
-              className="w-full bg-muted/50 border border-border/50 rounded-lg px-3 py-1.5 text-sm focus:ring-1 focus:ring-primary/50 outline-none transition-all"
-            />
+            {(() => {
+              const isPos = selectedBanka && selectedBanka.includes('POS');
+              
+              if (!isPos) {
+                return (
+                  <input
+                    type="number"
+                    disabled
+                    placeholder="1"
+                    {...register('taksit', { valueAsNumber: true })}
+                    className="w-full bg-muted border border-border/50 rounded-lg px-3 py-1.5 text-sm outline-none opacity-50"
+                  />
+                );
+              }
+
+              // Loading state or options
+              if (loadingSettings) {
+                return (
+                  <div className="w-full bg-muted/50 border border-border/50 rounded-lg px-3 py-1.5 text-sm flex items-center gap-2">
+                    <Loader2 size={12} className="animate-spin text-primary" />
+                    <span className="text-[10px] uppercase font-bold text-muted-foreground">Yükleniyor...</span>
+                  </div>
+                );
+              }
+
+              return (
+                <select
+                  {...register('taksit', { valueAsNumber: true })}
+                  className="w-full bg-muted/50 border border-border/50 rounded-lg px-3 py-1.5 text-sm focus:ring-1 focus:ring-primary/50 outline-none transition-all appearance-none"
+                >
+                  {availableInstallments.map(i => (
+                    <option key={i} value={i}>{i} Taksit</option>
+                  ))}
+                </select>
+              );
+            })()}
           </div>
 
           <div className="space-y-1 lg:col-span-2">

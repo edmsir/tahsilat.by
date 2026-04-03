@@ -24,7 +24,8 @@ import {
   Download,
   CheckCircle,
   Clock,
-  PieChart
+  PieChart,
+  Plus
 } from 'lucide-react';
 import { 
   format, 
@@ -246,6 +247,8 @@ export default function AdminPayments() {
         .update({
           vade_gun: bank.vade_gun,
           komisyon_oranlari: bank.komisyon_oranlari,
+          baslangic_tarihi: bank.baslangic_tarihi,
+          bitis_tarihi: bank.bitis_tarihi,
           updated_at: new Date().toISOString()
         })
         .eq('id', bank.id);
@@ -255,6 +258,42 @@ export default function AdminPayments() {
       alert('Hata: ' + error.message);
     } finally {
       setSaving(null);
+    }
+  };
+
+  const handleCreateNewAgreement = async (newAgreement: BankSettings) => {
+    try {
+        setLoading(true);
+        // 1. Find the agreement that needs to be "closed"
+        const { data: currentAgreements } = await supabase
+            .from('banka_ayarlari')
+            .select('*')
+            .eq('banka_adi', newAgreement.banka_adi)
+            .is('bitis_tarihi', null);
+        
+        if (currentAgreements && currentAgreements.length > 0) {
+            const prev = currentAgreements[0];
+            const oneDayBefore = new Date(new Date(newAgreement.baslangic_tarihi).getTime() - 86400000).toISOString().split('T')[0];
+            
+            await supabase
+                .from('banka_ayarlari')
+                .update({ bitis_tarihi: oneDayBefore })
+                .eq('id', prev.id);
+        }
+
+        // 2. Insert new agreement
+        const { error } = await supabase
+            .from('banka_ayarlari')
+            .insert([newAgreement]);
+        
+        if (error) throw error;
+        
+        fetchData();
+        alert('Yeni anlaşma başarıyla oluşturuldu ve önceki anlaşma sonlandırıldı.');
+    } catch (error: any) {
+        alert('Yeni anlaşma oluşturulamadı: ' + error.message);
+    } finally {
+        setLoading(false);
     }
   };
 
@@ -1053,63 +1092,129 @@ export default function AdminPayments() {
                </div>
             </div>
           ) : activeTab === 'banks' ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {banks.map((bank) => (
-                <div key={bank.id} className="bg-card p-8 rounded-3xl border border-border shadow-lg space-y-6">
-                  <div className="flex justify-between items-center border-b border-border pb-4">
-                    <h3 className="font-black text-foreground flex items-center gap-2 text-lg">
-                       <Building2 size={22} className="text-primary" />
-                       {bank.banka_adi}
-                    </h3>
-                  </div>
-                  
-                  <div className="space-y-3">
-                    <label className="text-[11px] uppercase font-black text-primary tracking-widest block">Bloke Gün (Vade)</label>
-                    <div className="flex items-center gap-3">
-                      <input 
-                        type="number" 
-                        value={bank.vade_gun}
-                        onChange={(e) => setBanks(prev => prev.map(b => b.id === bank.id ? {...b, vade_gun: parseInt(e.target.value)} : b))}
-                        className="bg-muted border border-border rounded-xl px-4 py-2.5 text-base w-28 font-black text-foreground focus:ring-2 focus:ring-primary/20 outline-none transition-all"
-                      />
-                      <span className="text-xs font-bold text-muted-foreground uppercase tracking-widest">GÜN SONRA</span>
-                    </div>
-                  </div>
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
+              {Object.entries(
+                banks.reduce((acc, bank) => {
+                  if (!acc[bank.banka_adi]) acc[bank.banka_adi] = [];
+                  acc[bank.banka_adi].push(bank);
+                  return acc;
+                }, {} as Record<string, BankSettings[]>)
+              ).map(([bankName, history]) => {
+                const sortedHistory = [...history].sort((a, b) => b.baslangic_tarihi.localeCompare(a.baslangic_tarihi));
+                const activeAgreement = sortedHistory.find(h => {
+                    const now = new Date().toISOString().split('T')[0];
+                    return h.baslangic_tarihi <= now && (!h.bitis_tarihi || h.bitis_tarihi >= now);
+                }) || sortedHistory[0];
 
-                  <div className="space-y-4">
-                    <span className="text-[11px] uppercase font-black text-primary tracking-widest block">Komisyon Oranları (%)</span>
-                    <div className="grid grid-cols-2 gap-4">
-                      {['1', '2', '3', '6', '12'].map(count => (
-                        <div key={count} className="bg-muted/30 p-3 rounded-2xl border border-border/50">
-                          <span className="text-[10px] font-black text-muted-foreground uppercase block mb-1">{count} TAKSİT</span>
-                          <div className="flex items-center gap-1">
-                            <span className="text-xs font-bold text-primary">%</span>
-                            <input 
-                              type="number" 
-                              step="0.01"
-                              value={bank.komisyon_oranlari[count] || 0}
-                              onChange={(e) => {
-                                const newRates = {...bank.komisyon_oranlari, [count]: parseFloat(e.target.value)};
-                                setBanks(prev => prev.map(b => b.id === bank.id ? {...b, komisyon_oranlari: newRates} : b));
-                              }}
-                              className="bg-transparent border-none p-0 text-sm font-black text-foreground w-full focus:ring-0 outline-none"
-                            />
-                          </div>
+                return (
+                  <div key={bankName} className="bg-card p-10 rounded-[40px] border border-border shadow-xl space-y-8">
+                    <div className="flex justify-between items-center border-b border-border/50 pb-6">
+                      <div className="flex items-center gap-4">
+                        <div className="p-4 bg-primary text-white rounded-2xl shadow-lg shadow-primary/20">
+                          <Building2 size={24} />
                         </div>
-                      ))}
+                        <div>
+                           <h3 className="font-black text-xl text-foreground">{bankName}</h3>
+                           <p className="text-[10px] text-muted-foreground font-black uppercase tracking-widest mt-1">
+                              {history.length} Anlaşma Kaydı
+                           </p>
+                        </div>
+                      </div>
+                      <button 
+                        onClick={() => {
+                          const startDate = window.prompt(`${bankName} için yeni anlaşma başlangıç tarihini girin (YYYY-MM-DD):`, new Date().toISOString().split('T')[0]);
+                          if (startDate) {
+                              const newAgreement: BankSettings = {
+                                  banka_adi: bankName,
+                                  baslangic_tarihi: startDate,
+                                  vade_gun: activeAgreement.vade_gun,
+                                  komisyon_oranlari: { ...activeAgreement.komisyon_oranlari }
+                              };
+                              handleCreateNewAgreement(newAgreement);
+                          }
+                        }}
+                        className="px-6 py-3 bg-primary/10 text-primary hover:bg-primary hover:text-white rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all"
+                      >
+                         + Yeni Anlaşma
+                      </button>
+                    </div>
+
+                    <div className="space-y-6">
+                      <span className="text-[11px] uppercase font-black text-primary tracking-widest block underline underline-offset-8">Anlaşma Geçiş Çizelgesi</span>
+                      <div className="space-y-4">
+                        {sortedHistory.map((agreement, idx) => (
+                          <div 
+                            key={agreement.id} 
+                            className={`p-6 rounded-3xl border transition-all ${agreement.id === activeAgreement.id ? 'bg-primary/5 border-primary shadow-inner' : 'bg-muted/20 border-border/50 opacity-60 hover:opacity-100'}`}
+                          >
+                            <div className="flex justify-between items-start mb-6">
+                               <div className="flex items-center gap-3">
+                                  <div className={`w-2 h-2 rounded-full ${agreement.id === activeAgreement.id ? 'bg-primary animate-pulse' : 'bg-muted-foreground'}`} />
+                                  <span className="text-xs font-black text-foreground">
+                                     {format(parseISO(agreement.baslangic_tarihi), 'dd.MM.yyyy')} 
+                                     {agreement.bitis_tarihi ? ` - ${format(parseISO(agreement.bitis_tarihi), 'dd.MM.yyyy')}` : ' / Devam Ediyor'}
+                                  </span>
+                                  {agreement.id === activeAgreement.id && (
+                                     <span className="px-3 py-1 bg-primary text-white rounded-full text-[9px] font-black uppercase tracking-tighter">Aktif</span>
+                                  )}
+                               </div>
+                               <div className="flex items-center gap-4">
+                                  <div className="text-right">
+                                     <p className="text-[9px] text-muted-foreground font-black uppercase">Vade</p>
+                                     <p className="text-sm font-black text-foreground">{agreement.vade_gun} GÜN</p>
+                                  </div>
+                                  <button
+                                    onClick={() => handleUpdateBank(agreement)}
+                                    disabled={saving === agreement.id}
+                                    className="p-3 bg-card hover:bg-muted border border-border rounded-xl text-primary transition-all shadow-sm"
+                                    title="Bu Anlaşmayı Kaydet"
+                                  >
+                                    {saving === agreement.id ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+                                  </button>
+                               </div>
+                            </div>
+
+                            <div className="grid grid-cols-3 sm:grid-cols-5 gap-3">
+                               {Array.from(new Set(['1', '2', '3', '4', '5', '6', '7', '8', '9', ...Object.keys(agreement.komisyon_oranlari)]))
+                                .sort((a, b) => parseInt(a) - parseInt(b))
+                                .map(count => (
+                                  <div key={count} className="bg-card/50 p-3 rounded-2xl border border-border/40 relative group/inst">
+                                     <span className="text-[9px] font-black text-muted-foreground uppercase block mb-1">{count} TAKSİT</span>
+                                     <div className="flex items-center gap-0.5">
+                                        <span className="text-[10px] font-bold text-primary">%</span>
+                                        <input 
+                                          type="number" 
+                                          step="0.01"
+                                          value={agreement.komisyon_oranlari[count] || 0}
+                                          onChange={(e) => {
+                                            const newRates = {...agreement.komisyon_oranlari, [count]: parseFloat(e.target.value)};
+                                            setBanks(prev => prev.map(b => b.id === agreement.id ? {...b, komisyon_oranlari: newRates} : b));
+                                          }}
+                                          className="bg-transparent border-none p-0 text-xs font-black text-foreground w-full focus:ring-0 outline-none"
+                                        />
+                                     </div>
+                                  </div>
+                                ))}
+                                <button 
+                                  onClick={() => {
+                                    const count = window.prompt('Taksit sayısı:');
+                                    if(count && !isNaN(parseInt(count))) {
+                                      const newRates = {...agreement.komisyon_oranlari, [count]: 0};
+                                      setBanks(prev => prev.map(b => b.id === agreement.id ? {...b, komisyon_oranlari: newRates} : b));
+                                    }
+                                  }}
+                                  className="border-2 border-dashed border-border/40 rounded-2xl flex items-center justify-center text-muted-foreground hover:text-primary hover:border-primary transition-all"
+                                >
+                                   <Plus size={16} />
+                                </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   </div>
-
-                  <button
-                    onClick={() => handleUpdateBank(bank)}
-                    disabled={saving === bank.id}
-                    className="w-full bg-primary hover:bg-primary/90 text-white py-4 rounded-2xl text-xs font-black uppercase tracking-widest flex items-center justify-center gap-2 transition-all shadow-lg shadow-primary/20 active:scale-95 disabled:opacity-50"
-                  >
-                    {saving === bank.id ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
-                    Ayarları Güncelle
-                  </button>
-                </div>
-              ))}
+                );
+              })}
             </div>
           ) : (
             <div className="max-w-2xl mx-auto space-y-4">
