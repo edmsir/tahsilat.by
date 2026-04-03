@@ -70,7 +70,7 @@ export interface BankSettings {
   id?: string;
   banka_adi: string;
   baslangic_tarihi: string;
-  bitis_tarihi?: string;
+  bitis_tarihi: string | null;
   vade_gun: number;
   komisyon_oranlari: Record<string, number>;
   created_at?: string;

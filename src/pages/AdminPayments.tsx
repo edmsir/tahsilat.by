@@ -25,7 +25,10 @@ import {
   CheckCircle,
   Clock,
   PieChart,
-  Plus
+  Plus,
+  Trash2,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
 import { 
   format, 
@@ -72,6 +75,7 @@ export default function AdminPayments() {
   const [showDailySummary, setShowDailySummary] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
   const [statusLoading, setStatusLoading] = useState<string | null>(null);
+  const [expandedBank, setExpandedBank] = useState<string | null>(null);
 
   useEffect(() => {
     fetchData();
@@ -248,7 +252,7 @@ export default function AdminPayments() {
           vade_gun: bank.vade_gun,
           komisyon_oranlari: bank.komisyon_oranlari,
           baslangic_tarihi: bank.baslangic_tarihi,
-          bitis_tarihi: bank.bitis_tarihi,
+          bitis_tarihi: bank.bitis_tarihi || null,
           updated_at: new Date().toISOString()
         })
         .eq('id', bank.id);
@@ -292,6 +296,93 @@ export default function AdminPayments() {
         alert('Yeni anlaşma başarıyla oluşturuldu ve önceki anlaşma sonlandırıldı.');
     } catch (error: any) {
         alert('Yeni anlaşma oluşturulamadı: ' + error.message);
+    } finally {
+        setLoading(false);
+    }
+  };
+
+  const handleDeleteBank = async (bankName: string) => {
+    if (!window.confirm(`${bankName} bankasına ait TÜM anlaşma ve ayarları silmek istediğinize emin misiniz?`)) return;
+    try {
+        setLoading(true);
+        const { error } = await supabase
+            .from('banka_ayarlari')
+            .delete()
+            .eq('banka_adi', bankName);
+        if (error) throw error;
+        fetchData();
+    } catch (error: any) {
+        alert('Banka silinemedi: ' + error.message);
+    } finally {
+        setLoading(false);
+    }
+  };
+
+  const handleDeleteAgreement = async (id: string) => {
+    const agreementToDelete = banks.find(b => b.id === id);
+    if (!agreementToDelete || !window.confirm('Bu anlaşma kaydını silmek istediğinize emin misiniz?')) return;
+
+    try {
+        setLoading(true);
+        const bankName = agreementToDelete.banka_adi;
+
+        // 1. Silme İşlemi
+        const { error: deleteError } = await supabase
+            .from('banka_ayarlari')
+            .delete()
+            .eq('id', id);
+        if (deleteError) throw deleteError;
+
+        // 2. Kalan anlaşmaları kontrol et ve en sonuncusunun bitiş tarihini aç
+        const { data: remaining } = await supabase
+            .from('banka_ayarlari')
+            .select('*')
+            .eq('banka_adi', bankName)
+            .order('baslangic_tarihi', { ascending: false });
+
+        if (remaining && remaining.length > 0) {
+            // En güncel kalan anlaşmanın bitiş tarihini sil (Süresiz yap)
+            const latest = remaining[0];
+            await supabase
+                .from('banka_ayarlari')
+                .update({ bitis_tarihi: null })
+                .eq('id', latest.id);
+        }
+
+        fetchData();
+    } catch (error: any) {
+        alert('Anlaşma silinemedi: ' + error.message);
+    } finally {
+        setLoading(false);
+    }
+  };
+
+  const handleAddNewBank = async () => {
+    const bankName = window.prompt('Eklenecek Banka Adı (Örn: X BANK POS):');
+    if (!bankName) return;
+
+    const startDate = window.prompt(`${bankName} için ilk anlaşma başlangıç tarihini girin (YYYY-MM-DD):`, new Date().toISOString().split('T')[0]);
+    if (!startDate) return;
+
+    try {
+        setLoading(true);
+        const newBank: BankSettings = {
+            banka_adi: bankName,
+            baslangic_tarihi: startDate,
+            bitis_tarihi: null,
+            vade_gun: 30,
+            komisyon_oranlari: { '1': 0, '2': 0, '3': 0, '4': 0, '5': 0, '6': 0, '7': 0, '8': 0, '9': 0, '10': 0, '11': 0, '12': 0 }
+        };
+
+        const { error } = await supabase
+            .from('banka_ayarlari')
+            .insert([newBank]);
+        
+        if (error) throw error;
+        fetchData();
+        alert(`${bankName} başarıyla eklendi.`);
+    } catch (error: any) {
+        alert('Banka eklenemedi: ' + error.message);
     } finally {
         setLoading(false);
     }
@@ -373,7 +464,8 @@ export default function AdminPayments() {
   };
 
   const handleSyncRecords = async () => {
-    if (!window.confirm('Tüm geçmiş POS kayıtları taranacak ve eksik ödeme planları otomatik oluşturulacak. Devam edilsin mi?')) return;
+    const shouldOverwrite = window.confirm('Tüm POS kayıtları taranacak. Mevcut "BEKLEMEDE" olan planlar silinip GÜNCEL komisyonlarla yeniden oluşturulacak. (Ödenmiş/YATTI olan taksitler korunur). Devam edilsin mi?');
+    if (!shouldOverwrite) return;
     
     setSyncing(true);
     try {
@@ -401,34 +493,49 @@ export default function AdminPayments() {
       // 4. Generate & Insert for each
       const { generatePaymentSchedule } = await import('../utils/paymentCalculator');
       
-      let count = 0;
+      let updatedCount = 0;
+      let newCount = 0;
+
       for (const record of posRecords) {
         const settings = bankSettings.find(b => b.banka_adi === record.banka);
         if (!settings) continue;
 
-        // Check if schedule already exists
-        const { count: existingCount } = await supabase
+        // Mevcut planı kontrol et
+        const { data: existingPlan } = await supabase
           .from('odeme_plani')
-          .select('*', { count: 'exact', head: true })
+          .select('*')
           .eq('kayit_id', record.id);
         
-        if (existingCount === 0) {
-          const schedule = generatePaymentSchedule(record as any, settings, holidayList);
-          const toInsert = schedule.map(s => ({
-            kayit_id: record.id,
-            taksit_no: s.taksit_no,
-            planlanan_tarih: s.planlanan_tarih,
-            net_tutar: s.net_tutar,
-            komisyon_tutar: s.komisyon_tutar,
-            ana_tutar: s.ana_tutar,
-            durum: 'BEKLEMEDE'
-          }));
-          await supabase.from('odeme_plani').insert(toInsert);
-          count++;
+        const hasPaidInstallments = existingPlan?.some(i => i.durum === 'YATTI');
+
+        if (hasPaidInstallments) {
+            // Ödenmiş taksit varsa risk almamak için bu kaydı atla veya sadece bekleyenleri güncelle (şimdilik güvenli liman: atla)
+            continue;
         }
+
+        // Ödenmiş taksit yoksa, eskiyi sil ve yeniyi oluştur
+        if (existingPlan && existingPlan.length > 0) {
+            await supabase.from('odeme_plani').delete().eq('kayit_id', record.id);
+            updatedCount++;
+        } else {
+            newCount++;
+        }
+
+        const schedule = generatePaymentSchedule(record as any, settings, holidayList);
+        const toInsert = schedule.map(s => ({
+          kayit_id: record.id,
+          taksit_no: s.taksit_no,
+          planlanan_tarih: s.planlanan_tarih,
+          net_tutar: s.net_tutar,
+          komisyon_tutar: s.komisyon_tutar,
+          ana_tutar: s.ana_tutar,
+          durum: 'BEKLEMEDE'
+        }));
+        
+        await supabase.from('odeme_plani').insert(toInsert);
       }
 
-      alert(`${count} adet kayıt için ödeme planı başarıyla oluşturuldu.`);
+      alert(`${updatedCount} adet mevcut plan güncellendi, ${newCount} adet yeni plan oluşturuldu.`);
       fetchData();
     } catch (error: any) {
       alert('Senkronizasyon hatası: ' + error.message);
@@ -1092,7 +1199,19 @@ export default function AdminPayments() {
                </div>
             </div>
           ) : activeTab === 'banks' ? (
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
+            <div className="space-y-4">
+              <div className="flex justify-between items-center">
+                <h2 className="text-xl font-black text-foreground uppercase tracking-tighter flex items-center gap-2">
+                   <Building2 className="text-primary" /> Banka ve Komisyon Yönetimi
+                </h2>
+                <button 
+                  onClick={handleAddNewBank}
+                  className="px-6 py-3 bg-primary text-white rounded-2xl text-xs font-black uppercase tracking-widest shadow-lg shadow-primary/20 hover:scale-105 transition-all flex items-center gap-2"
+                >
+                   <Plus size={14} /> Yeni Banka Tanımla
+                </button>
+              </div>
+              <div className="space-y-2">
               {Object.entries(
                 banks.reduce((acc, bank) => {
                   if (!acc[bank.banka_adi]) acc[bank.banka_adi] = [];
@@ -1100,121 +1219,204 @@ export default function AdminPayments() {
                   return acc;
                 }, {} as Record<string, BankSettings[]>)
               ).map(([bankName, history]) => {
-                const sortedHistory = [...history].sort((a, b) => b.baslangic_tarihi.localeCompare(a.baslangic_tarihi));
-                const activeAgreement = sortedHistory.find(h => {
-                    const now = new Date().toISOString().split('T')[0];
-                    return h.baslangic_tarihi <= now && (!h.bitis_tarihi || h.bitis_tarihi >= now);
-                }) || sortedHistory[0];
+                const sortedHistory = [...history].sort((a, b) => a.baslangic_tarihi.localeCompare(b.baslangic_tarihi));
+                const now = new Date().toISOString().split('T')[0];
+                const activeAgreement = sortedHistory.find(h =>
+                    h.baslangic_tarihi <= now && (!h.bitis_tarihi || h.bitis_tarihi >= now)
+                ) || sortedHistory[sortedHistory.length - 1];
+                const isOpen = expandedBank === bankName;
 
                 return (
-                  <div key={bankName} className="bg-card p-10 rounded-[40px] border border-border shadow-xl space-y-8">
-                    <div className="flex justify-between items-center border-b border-border/50 pb-6">
+                  <div key={bankName} className="bg-card border border-border rounded-2xl overflow-hidden transition-all">
+                    {/* Accordion Header */}
+                    <div
+                      className="flex items-center justify-between px-6 py-4 cursor-pointer hover:bg-muted/30 transition-all"
+                      onClick={() => setExpandedBank(isOpen ? null : bankName)}
+                    >
                       <div className="flex items-center gap-4">
-                        <div className="p-4 bg-primary text-white rounded-2xl shadow-lg shadow-primary/20">
-                          <Building2 size={24} />
+                        <div className="p-2.5 bg-primary/10 text-primary rounded-xl">
+                          <Building2 size={18} />
                         </div>
                         <div>
-                           <h3 className="font-black text-xl text-foreground">{bankName}</h3>
-                           <p className="text-[10px] text-muted-foreground font-black uppercase tracking-widest mt-1">
-                              {history.length} Anlaşma Kaydı
-                           </p>
+                          <h3 className="font-black text-base text-foreground">{bankName}</h3>
+                          <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-widest">
+                            {history.length} anlaşma · Aktif oran (1T): %{activeAgreement?.komisyon_oranlari?.['1'] ?? 0}
+                          </p>
                         </div>
                       </div>
-                      <button 
-                        onClick={() => {
-                          const startDate = window.prompt(`${bankName} için yeni anlaşma başlangıç tarihini girin (YYYY-MM-DD):`, new Date().toISOString().split('T')[0]);
-                          if (startDate) {
-                              const newAgreement: BankSettings = {
-                                  banka_adi: bankName,
-                                  baslangic_tarihi: startDate,
-                                  vade_gun: activeAgreement.vade_gun,
-                                  komisyon_oranlari: { ...activeAgreement.komisyon_oranlari }
-                              };
-                              handleCreateNewAgreement(newAgreement);
-                          }
-                        }}
-                        className="px-6 py-3 bg-primary/10 text-primary hover:bg-primary hover:text-white rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all"
-                      >
-                         + Yeni Anlaşma
-                      </button>
-                    </div>
-
-                    <div className="space-y-6">
-                      <span className="text-[11px] uppercase font-black text-primary tracking-widest block underline underline-offset-8">Anlaşma Geçiş Çizelgesi</span>
-                      <div className="space-y-4">
-                        {sortedHistory.map((agreement, idx) => (
-                          <div 
-                            key={agreement.id} 
-                            className={`p-6 rounded-3xl border transition-all ${agreement.id === activeAgreement.id ? 'bg-primary/5 border-primary shadow-inner' : 'bg-muted/20 border-border/50 opacity-60 hover:opacity-100'}`}
-                          >
-                            <div className="flex justify-between items-start mb-6">
-                               <div className="flex items-center gap-3">
-                                  <div className={`w-2 h-2 rounded-full ${agreement.id === activeAgreement.id ? 'bg-primary animate-pulse' : 'bg-muted-foreground'}`} />
-                                  <span className="text-xs font-black text-foreground">
-                                     {format(parseISO(agreement.baslangic_tarihi), 'dd.MM.yyyy')} 
-                                     {agreement.bitis_tarihi ? ` - ${format(parseISO(agreement.bitis_tarihi), 'dd.MM.yyyy')}` : ' / Devam Ediyor'}
-                                  </span>
-                                  {agreement.id === activeAgreement.id && (
-                                     <span className="px-3 py-1 bg-primary text-white rounded-full text-[9px] font-black uppercase tracking-tighter">Aktif</span>
-                                  )}
-                               </div>
-                               <div className="flex items-center gap-4">
-                                  <div className="text-right">
-                                     <p className="text-[9px] text-muted-foreground font-black uppercase">Vade</p>
-                                     <p className="text-sm font-black text-foreground">{agreement.vade_gun} GÜN</p>
-                                  </div>
-                                  <button
-                                    onClick={() => handleUpdateBank(agreement)}
-                                    disabled={saving === agreement.id}
-                                    className="p-3 bg-card hover:bg-muted border border-border rounded-xl text-primary transition-all shadow-sm"
-                                    title="Bu Anlaşmayı Kaydet"
-                                  >
-                                    {saving === agreement.id ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-                                  </button>
-                               </div>
-                            </div>
-
-                            <div className="grid grid-cols-3 sm:grid-cols-5 gap-3">
-                               {Array.from(new Set(['1', '2', '3', '4', '5', '6', '7', '8', '9', ...Object.keys(agreement.komisyon_oranlari)]))
-                                .sort((a, b) => parseInt(a) - parseInt(b))
-                                .map(count => (
-                                  <div key={count} className="bg-card/50 p-3 rounded-2xl border border-border/40 relative group/inst">
-                                     <span className="text-[9px] font-black text-muted-foreground uppercase block mb-1">{count} TAKSİT</span>
-                                     <div className="flex items-center gap-0.5">
-                                        <span className="text-[10px] font-bold text-primary">%</span>
-                                        <input 
-                                          type="number" 
-                                          step="0.01"
-                                          value={agreement.komisyon_oranlari[count] || 0}
-                                          onChange={(e) => {
-                                            const newRates = {...agreement.komisyon_oranlari, [count]: parseFloat(e.target.value)};
-                                            setBanks(prev => prev.map(b => b.id === agreement.id ? {...b, komisyon_oranlari: newRates} : b));
-                                          }}
-                                          className="bg-transparent border-none p-0 text-xs font-black text-foreground w-full focus:ring-0 outline-none"
-                                        />
-                                     </div>
-                                  </div>
-                                ))}
-                                <button 
-                                  onClick={() => {
-                                    const count = window.prompt('Taksit sayısı:');
-                                    if(count && !isNaN(parseInt(count))) {
-                                      const newRates = {...agreement.komisyon_oranlari, [count]: 0};
-                                      setBanks(prev => prev.map(b => b.id === agreement.id ? {...b, komisyon_oranlari: newRates} : b));
-                                    }
-                                  }}
-                                  className="border-2 border-dashed border-border/40 rounded-2xl flex items-center justify-center text-muted-foreground hover:text-primary hover:border-primary transition-all"
-                                >
-                                   <Plus size={16} />
-                                </button>
-                            </div>
-                          </div>
-                        ))}
+                      <div className="flex items-center gap-3">
+                        {activeAgreement && (
+                          <span className="px-3 py-1 bg-primary/10 text-primary rounded-full text-[9px] font-black uppercase">
+                            {activeAgreement.baslangic_tarihi} →
+                            {activeAgreement.bitis_tarihi ? ` ${activeAgreement.bitis_tarihi}` : ' Devam'}
+                          </span>
+                        )}
+                        {isOpen ? <ChevronUp size={18} className="text-primary" /> : <ChevronDown size={18} className="text-muted-foreground" />}
                       </div>
                     </div>
+
+                    {/* Accordion Body */}
+                    {isOpen && (
+                      <div className="px-6 pb-6 space-y-4 border-t border-border/50">
+                        {/* Action bar */}
+                        <div className="flex items-center justify-between pt-4">
+                          <span className="text-[11px] uppercase font-black text-primary tracking-widest">Anlaşma Geçmişi</span>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => {
+                                const startDate = window.prompt(`${bankName} için yeni anlaşma başlangıç tarihini girin (YYYY-MM-DD):`, new Date().toISOString().split('T')[0]);
+                                if (startDate) {
+                                  const newAgreement: BankSettings = {
+                                    banka_adi: bankName,
+                                    baslangic_tarihi: startDate,
+                                    bitis_tarihi: null,
+                                    vade_gun: activeAgreement.vade_gun,
+                                    komisyon_oranlari: { ...activeAgreement.komisyon_oranlari }
+                                  };
+                                  handleCreateNewAgreement(newAgreement);
+                                }
+                              }}
+                              className="px-4 py-2 bg-primary/10 text-primary hover:bg-primary hover:text-white rounded-xl text-[10px] font-black uppercase transition-all"
+                            >
+                              + Yeni Anlaşma
+                            </button>
+                            <button
+                              onClick={() => handleDeleteBank(bankName)}
+                              className="px-4 py-2 bg-destructive/10 text-destructive hover:bg-destructive hover:text-white rounded-xl text-[10px] font-black uppercase transition-all flex items-center gap-1"
+                            >
+                              <Trash2 size={12} /> Bankayı Sil
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Agreement Timeline */}
+                        <div className="space-y-3">
+                          {sortedHistory.map((agreement) => {
+                            const isActive = agreement.id === activeAgreement?.id;
+                            return (
+                              <div
+                                key={agreement.id}
+                                className={`p-4 rounded-2xl border transition-all ${
+                                  isActive ? 'bg-primary/5 border-primary' : 'bg-muted/20 border-border/50'
+                                }`}
+                              >
+                                {/* Date + vade + actions row */}
+                                <div className="flex flex-wrap items-center gap-3 mb-4">
+                                  <div className={`w-2 h-2 rounded-full flex-shrink-0 ${isActive ? 'bg-primary animate-pulse' : 'bg-muted-foreground'}`} />
+                                  {isActive && <span className="px-2 py-0.5 bg-primary text-white rounded-full text-[9px] font-black uppercase">Aktif</span>}
+
+                                  <div className="flex items-center gap-2 flex-1 flex-wrap">
+                                    <div className="flex flex-col">
+                                      <span className="text-[9px] text-muted-foreground font-bold uppercase">Başlangıç</span>
+                                      <input
+                                        type="date"
+                                        value={agreement.baslangic_tarihi}
+                                        onChange={(e) => setBanks(prev => prev.map(b => b.id === agreement.id ? {...b, baslangic_tarihi: e.target.value} : b))}
+                                        className="bg-muted/40 border border-border/50 rounded-lg px-2 py-1 text-xs font-bold text-foreground focus:ring-1 focus:ring-primary/50 outline-none"
+                                      />
+                                    </div>
+                                    <span className="text-muted-foreground font-bold">→</span>
+                                    <div className="flex flex-col">
+                                      <span className="text-[9px] text-muted-foreground font-bold uppercase">Bitiş</span>
+                                      <input
+                                        type="date"
+                                        value={agreement.bitis_tarihi ?? ''}
+                                        placeholder="Süresiz"
+                                        onChange={(e) => setBanks(prev => prev.map(b => b.id === agreement.id ? {...b, bitis_tarihi: e.target.value || null} : b))}
+                                        className="bg-muted/40 border border-border/50 rounded-lg px-2 py-1 text-xs font-bold text-foreground focus:ring-1 focus:ring-primary/50 outline-none"
+                                      />
+                                    </div>
+                                    <div className="flex flex-col">
+                                      <span className="text-[9px] text-muted-foreground font-bold uppercase">Vade (Gün)</span>
+                                      <input
+                                        type="number"
+                                        value={agreement.vade_gun}
+                                        onChange={(e) => setBanks(prev => prev.map(b => b.id === agreement.id ? {...b, vade_gun: parseInt(e.target.value)} : b))}
+                                        className="bg-muted/40 border border-border/50 rounded-lg px-2 py-1 text-xs font-bold text-foreground w-20 focus:ring-1 focus:ring-primary/50 outline-none"
+                                      />
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-center gap-2 ml-auto">
+                                    <button
+                                      onClick={() => {
+                                        // Overlap check
+                                        const others = sortedHistory.filter(h => h.id !== agreement.id);
+                                        const hasOverlap = others.some(h => {
+                                          const aStart = agreement.baslangic_tarihi;
+                                          const aEnd = agreement.bitis_tarihi;
+                                          const hStart = h.baslangic_tarihi;
+                                          const hEnd = h.bitis_tarihi;
+                                          const aEndEff = aEnd ?? '9999-12-31';
+                                          const hEndEff = hEnd ?? '9999-12-31';
+                                          return aStart <= hEndEff && aEndEff >= hStart;
+                                        });
+                                        if (hasOverlap) {
+                                          alert('Hata: Bu anlaşmanın tarihleri başka bir anlaşmayla çakışıyor. Lütfen başa baş (bitiş+1=başlangıç) tarihler kullanın.');
+                                          return;
+                                        }
+                                        handleUpdateBank(agreement);
+                                      }}
+                                      disabled={saving === agreement.id}
+                                      className="p-2 bg-card hover:bg-muted border border-border rounded-lg text-primary transition-all"
+                                      title="Kaydet"
+                                    >
+                                      {saving === agreement.id ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
+                                    </button>
+                                    <button
+                                      onClick={() => handleDeleteAgreement(agreement.id!)}
+                                      className="p-2 bg-destructive/10 hover:bg-destructive hover:text-white border border-destructive/20 rounded-lg text-destructive transition-all"
+                                      title="Sil"
+                                    >
+                                      <X size={13} />
+                                    </button>
+                                  </div>
+                                </div>
+
+                                {/* Commission rates grid */}
+                                <div className="grid grid-cols-5 sm:grid-cols-10 gap-2">
+                                  {Array.from(new Set(['1','2','3','4','5','6','7','8','9','10','11','12',...Object.keys(agreement.komisyon_oranlari)]))
+                                    .sort((a,b) => parseInt(a)-parseInt(b))
+                                    .map(count => (
+                                      <div key={count} className="bg-background/60 p-2 rounded-xl border border-border/40">
+                                        <span className="text-[8px] font-black text-muted-foreground uppercase block">{count}T</span>
+                                        <div className="flex items-center gap-0.5">
+                                          <span className="text-[9px] font-bold text-primary">%</span>
+                                          <input
+                                            type="number" step="0.01"
+                                            value={agreement.komisyon_oranlari[count] ?? 0}
+                                            onChange={(e) => {
+                                              const newRates = {...agreement.komisyon_oranlari, [count]: parseFloat(e.target.value)};
+                                              setBanks(prev => prev.map(b => b.id === agreement.id ? {...b, komisyon_oranlari: newRates} : b));
+                                            }}
+                                            className="bg-transparent border-none p-0 text-[10px] font-black text-foreground w-full focus:ring-0 outline-none"
+                                          />
+                                        </div>
+                                      </div>
+                                    ))}
+                                  <button
+                                    onClick={() => {
+                                      const count = window.prompt('Eklemek istediğiniz taksit sayısı:');
+                                      if (count && !isNaN(parseInt(count))) {
+                                        const newRates = {...agreement.komisyon_oranlari, [count]: 0};
+                                        setBanks(prev => prev.map(b => b.id === agreement.id ? {...b, komisyon_oranlari: newRates} : b));
+                                      }
+                                    }}
+                                    className="border-2 border-dashed border-border/40 rounded-xl flex items-center justify-center text-muted-foreground hover:text-primary hover:border-primary transition-all min-h-[48px]"
+                                  >
+                                    <Plus size={14} />
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               })}
+              </div>
             </div>
           ) : (
             <div className="max-w-2xl mx-auto space-y-4">

@@ -3,17 +3,12 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../hooks/useAuth';
-import type { Sube, OdemeTuru, Kayit } from '../../types';
+import type { Sube, Kayit } from '../../types';
 import { Loader2, Plus, Save, CheckCircle2, X } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const subeler: Sube[] = ['MERKEZ', 'ANKARA', 'BURSA', 'BAYRAMPAŞA', 'MODOKO', 'İZMİR', 'MALZEME'];
-const odemeTurleri: OdemeTuru[] = [
-  'NAKİT', 'HAVALE / EFT', 'ÇEK', 'SENET', 'AKBANK POS', 'GARANTİ POS', 
-  'İŞ BANKASI POS', 'ZİRAAT BANKASI POS', 'YAPI KREDİ POS', 'HALKBANK POS', 
-  'QNB FİNANSBANK POS', 'DENİZBANK POS'
-];
 
 const formSchema = z.object({
   tarih: z.string(),
@@ -56,8 +51,39 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
 
   const [loadingSettings, setLoadingSettings] = useState(false);
   const [availableInstallments, setAvailableInstallments] = useState<number[]>([1]);
+  const [dynamicOdemeTurleri, setDynamicOdemeTurleri] = useState<string[]>([
+    'NAKİT', 'HAVALE / EFT', 'ÇEK', 'SENET', 'AKBANK POS', 'GARANTİ POS', 
+    'İŞ BANKASI POS', 'ZİRAAT BANKASI POS', 'YAPI KREDİ POS', 'HALKBANK POS', 
+    'QNB FİNANSBANK POS', 'DENİZBANK POS'
+  ]);
+  
   const selectedBanka = watch('banka');
   const selectedTarih = watch('tarih');
+
+  useEffect(() => {
+    const fetchBanks = async () => {
+      const sabitDefaults = [
+        'NAKİT', 'HAVALE / EFT', 'ÇEK', 'SENET',
+        'AKBANK POS', 'GARANTİ POS', 'İŞ BANKASI POS', 'ZİRAAT BANKASI POS',
+        'YAPI KREDİ POS', 'HALKBANK POS', 'QNB FİNANSBANK POS', 'DENİZBANK POS'
+      ];
+      try {
+        const { data } = await supabase.from('banka_ayarlari').select('banka_adi');
+        if (data && data.length > 0) {
+          const uniqueBanks = Array.from(new Set(data.map((b: { banka_adi: string }) => b.banka_adi)));
+          const combined = Array.from(new Set([...sabitDefaults, ...uniqueBanks]));
+          setDynamicOdemeTurleri(combined);
+        } else {
+          // RLS engeli veya boş tablo - sabit listeyi kullan
+          setDynamicOdemeTurleri(sabitDefaults);
+        }
+      } catch {
+        // Hata durumunda da sabit listeyi göster
+        setDynamicOdemeTurleri(sabitDefaults);
+      }
+    };
+    fetchBanks();
+  }, []);
 
   useEffect(() => {
     const fetchBankSettings = async () => {
@@ -77,22 +103,22 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
           .or(`bitis_tarihi.is.null,bitis_tarihi.gte.${selectedTarih}`)
           .order('baslangic_tarihi', { ascending: false })
           .limit(1)
-          .single();
+          .maybeSingle();
 
         if (bankSettings && bankSettings.komisyon_oranlari) {
           const rates = bankSettings.komisyon_oranlari;
-          // Sort keys numerically
-          const insts = Array.from(new Set(['1', '2', '3', '4', '5', '6', '7', '8', '9', ...Object.keys(rates)]))
+          // Sadece veritabanında tanımlı olan taksitleri göster
+          const insts = Object.keys(rates)
             .map(k => parseInt(k))
             .sort((a, b) => a - b);
           
-          setAvailableInstallments(insts);
+          setAvailableInstallments(insts.length > 0 ? insts : [1]);
         } else {
-          // Default 1-9 for new banks or if no agreement matches yet
-          setAvailableInstallments([1,2,3,4,5,6,7,8,9]);
+          // Anlaşma yoksa taksit seçeneği sunma
+          setAvailableInstallments([1]);
         }
       } catch (err) {
-        setAvailableInstallments([1,2,3,4,5,6,7,8,9]);
+        setAvailableInstallments([1]);
       } finally {
         setLoadingSettings(false);
       }
@@ -171,11 +197,19 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
             .or(`bitis_tarihi.is.null,bitis_tarihi.gte.${data.tarih}`)
             .order('baslangic_tarihi', { ascending: false })
             .limit(1)
-            .single();
+            .maybeSingle();
           
+          if (!bankSettings) {
+            const msg = `${data.banka} için ${data.tarih} tarihinde geçerli bir banka anlaşması bulunamadı! Lütfen önce Admin panelinden banka anlaşmasını tanımlayın.`;
+            alert(msg);
+            setLoading(false);
+            return; // İŞLEMİ DURDUR
+          }
+
           if (bankError) {
-              console.warn('Matching bank agreement not found for date:', data.tarih);
-              throw bankError;
+            alert('Banka ayarları kontrol edilirken bir hata oluştu: ' + bankError.message);
+            setLoading(false);
+            return;
           }
 
           // 2. Fetch Holidays
@@ -184,11 +218,11 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
             .select('tarih');
           
           if (holidayError) throw holidayError;
-          const holidayList = holidaysData.map(h => h.tarih);
+          const holidayList = (holidaysData || []).map(h => h.tarih);
 
           // 3. Generate Schedule
           const { generatePaymentSchedule } = await import('../../utils/paymentCalculator');
-          const schedule = generatePaymentSchedule(data, bankSettings, holidayList);
+          const schedule = generatePaymentSchedule(data, bankSettings as any, holidayList);
 
           // 4. Save to Database (First find the record ID if it's new)
           let finalRecordId = isEditing ? initialData.id : null;
@@ -283,7 +317,7 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
               {...register('banka')}
               className="w-full bg-muted/50 border border-border/50 rounded-lg px-3 py-1.5 text-sm focus:ring-1 focus:ring-primary/50 outline-none transition-all appearance-none"
             >
-              {odemeTurleri.map(t => <option key={t} value={t}>{t}</option>)}
+              {dynamicOdemeTurleri.map(t => <option key={t} value={t}>{t}</option>)}
             </select>
           </div>
 
