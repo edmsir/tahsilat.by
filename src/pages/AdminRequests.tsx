@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../hooks/useAuth';
-import type { Talep } from '../types';
+import type { Talep, Kayit } from '../types';
 import MainLayout from '../components/layout/MainLayout';
 import { 
   CheckCircle2, 
@@ -84,7 +84,7 @@ export default function AdminRequests() {
             if (bankSettings && holidaysData) {
               const holidayList = holidaysData.map(h => h.tarih);
               const { generatePaymentSchedule } = await import('../utils/paymentCalculator');
-              const schedule = generatePaymentSchedule(updatedRecord as any, bankSettings, holidayList);
+              const schedule = generatePaymentSchedule(updatedRecord as Kayit, bankSettings, holidayList);
 
               await supabase.from('odeme_plani').delete().eq('kayit_id', talep.kayit_id);
               
@@ -116,8 +116,9 @@ export default function AdminRequests() {
 
       alert('Talep başarıyla onaylandı ve işlem gerçekleştirildi.');
       fetchTalepler();
-    } catch (error: any) {
-      alert('İşlem sırasında hata oluştu: ' + error.message);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Bilinmeyen bir hata oluştu';
+      alert('İşlem sırasında hata oluştu: ' + message);
     } finally {
       setProcessingId(null);
     }
@@ -136,8 +137,9 @@ export default function AdminRequests() {
       if (error) throw error;
       alert('Talep reddedildi.');
       fetchTalepler();
-    } catch (error: any) {
-      alert('İşlem sırasında hata oluştu: ' + error.message);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Bilinmeyen bir hata oluştu';
+      alert('İşlem sırasında hata oluştu: ' + message);
     } finally {
       setProcessingId(null);
     }

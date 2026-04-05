@@ -1,7 +1,7 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../hooks/useAuth';
-import type { BankSettings, BankHoliday, PaymentPlanItem } from '../types';
+import type { BankSettings, BankHoliday, PaymentPlanItem, Kayit } from '../types';
 import MainLayout from '../components/layout/MainLayout';
 import { 
   Building2, 
@@ -77,9 +77,35 @@ export default function AdminPayments() {
   const [statusLoading, setStatusLoading] = useState<string | null>(null);
   const [expandedBank, setExpandedBank] = useState<string | null>(null);
 
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    try {
+      if (activeTab === 'banks') {
+        const { data, error } = await supabase.from('banka_ayarlari').select('*').order('banka_adi');
+        if (error) throw error;
+        setBanks(data || []);
+      } else if (activeTab === 'holidays') {
+        const { data, error } = await supabase.from('tatil_gunleri').select('*').order('tarih');
+        if (error) throw error;
+        setHolidays(data || []);
+      } else if (activeTab === 'schedule') {
+        const { data, error } = await supabase
+          .from('odeme_plani')
+          .select('*, kayitlar(*)')
+          .order('planlanan_tarih', { ascending: true });
+        if (error) throw error;
+        setSchedule(data || []);
+      }
+    } catch (error) {
+      console.error('Error fetching data:', error);
+    } finally {
+      setLoading(false);
+    }
+  }, [activeTab]);
+
   useEffect(() => {
     fetchData();
-  }, [activeTab]);
+  }, [fetchData]);
 
   const { filteredSchedule, stats, dailySummaries, chartData, bankEfficiency } = useMemo(() => {
     const now = new Date();
@@ -184,7 +210,8 @@ export default function AdminPayments() {
 
     // Sort filtered results
     filtered.sort((a, b) => {
-      let aValue: any, bValue: any;
+      let aValue: string | number | undefined;
+      let bValue: string | number | undefined;
       if (sortConfig.key === 'sube') {
         aValue = a.kayitlar?.sube_adi;
         bValue = b.kayitlar?.sube_adi;
@@ -192,10 +219,11 @@ export default function AdminPayments() {
         aValue = a.kayitlar?.banka;
         bValue = b.kayitlar?.banka;
       } else {
-        aValue = a[sortConfig.key as keyof PaymentPlanItem];
-        bValue = b[sortConfig.key as keyof PaymentPlanItem];
+        aValue = a[sortConfig.key as keyof PaymentPlanItem] as string | number | undefined;
+        bValue = b[sortConfig.key as keyof PaymentPlanItem] as string | number | undefined;
       }
 
+      if (aValue === undefined || bValue === undefined) return 0;
       if (aValue < bValue) return sortConfig.direction === 'asc' ? -1 : 1;
       if (aValue > bValue) return sortConfig.direction === 'asc' ? 1 : -1;
       return 0;
@@ -208,7 +236,7 @@ export default function AdminPayments() {
     return { filteredSchedule: filtered, stats: initialStats, dailySummaries, chartData, bankEfficiency };
   }, [schedule, searchTerm, bankFilter, subeFilter, startDate, endDate, sortConfig]);
 
-  const requestSort = (key: any) => {
+  const requestSort = (key: keyof PaymentPlanItem | 'sube' | 'banka') => {
     let direction: 'asc' | 'desc' = 'asc';
     if (sortConfig.key === key && sortConfig.direction === 'asc') {
       direction = 'desc';
@@ -216,31 +244,7 @@ export default function AdminPayments() {
     setSortConfig({ key, direction });
   };
 
-  const fetchData = async () => {
-    setLoading(true);
-    try {
-      if (activeTab === 'banks') {
-        const { data, error } = await supabase.from('banka_ayarlari').select('*').order('banka_adi');
-        if (error) throw error;
-        setBanks(data || []);
-      } else if (activeTab === 'holidays') {
-        const { data, error } = await supabase.from('tatil_gunleri').select('*').order('tarih');
-        if (error) throw error;
-        setHolidays(data || []);
-      } else if (activeTab === 'schedule') {
-        const { data, error } = await supabase
-          .from('odeme_plani')
-          .select('*, kayitlar(*)')
-          .order('planlanan_tarih', { ascending: true });
-        if (error) throw error;
-        setSchedule(data || []);
-      }
-    } catch (error) {
-      console.error('Error fetching data:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
+  // fetchData was moved above
 
   const handleUpdateBank = async (bank: BankSettings) => {
     if (!bank.id) return;
@@ -258,8 +262,9 @@ export default function AdminPayments() {
         .eq('id', bank.id);
       if (error) throw error;
       fetchData();
-    } catch (error: any) {
-      alert('Hata: ' + error.message);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Bilinmeyen bir hata oluştu';
+      alert('Hata: ' + message);
     } finally {
       setSaving(null);
     }
@@ -294,8 +299,9 @@ export default function AdminPayments() {
         
         fetchData();
         alert('Yeni anlaşma başarıyla oluşturuldu ve önceki anlaşma sonlandırıldı.');
-    } catch (error: any) {
-        alert('Yeni anlaşma oluşturulamadı: ' + error.message);
+    } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : 'Bilinmeyen bir hata oluştu';
+        alert('Yeni anlaşma oluşturulamadı: ' + message);
     } finally {
         setLoading(false);
     }
@@ -311,8 +317,9 @@ export default function AdminPayments() {
             .eq('banka_adi', bankName);
         if (error) throw error;
         fetchData();
-    } catch (error: any) {
-        alert('Banka silinemedi: ' + error.message);
+    } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : 'Bilinmeyen bir hata oluştu';
+        alert('Banka silinemedi: ' + message);
     } finally {
         setLoading(false);
     }
@@ -350,8 +357,9 @@ export default function AdminPayments() {
         }
 
         fetchData();
-    } catch (error: any) {
-        alert('Anlaşma silinemedi: ' + error.message);
+    } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : 'Bilinmeyen bir hata oluştu';
+        alert('Anlaşma silinemedi: ' + message);
     } finally {
         setLoading(false);
     }
@@ -381,8 +389,9 @@ export default function AdminPayments() {
         if (error) throw error;
         fetchData();
         alert(`${bankName} başarıyla eklendi.`);
-    } catch (error: any) {
-        alert('Banka eklenemedi: ' + error.message);
+    } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : 'Bilinmeyen bir hata oluştu';
+        alert('Banka eklenemedi: ' + message);
     } finally {
         setLoading(false);
     }
@@ -402,8 +411,9 @@ export default function AdminPayments() {
       setSchedule(prev => prev.map(item => 
         item.id === itemId ? { ...item, durum: newStatus } : item
       ));
-    } catch (error: any) {
-      alert('Hata: ' + error.message);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Bilinmeyen bir hata oluştu';
+      alert('Hata: ' + message);
     } finally {
       setStatusLoading(null);
     }
@@ -458,8 +468,9 @@ export default function AdminPayments() {
       const buffer = await workbook.xlsx.writeBuffer();
       saveAs(new Blob([buffer]), `Odeme_Plani_${format(new Date(), 'dd_MM_yyyy')}.xlsx`);
       setShowExportModal(false);
-    } catch (error: any) {
-      alert('Excel dışa aktarma hatası: ' + error.message);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Bilinmeyen bir hata oluştu';
+      alert('Excel dışa aktarma hatası: ' + message);
     }
   };
 
@@ -521,7 +532,7 @@ export default function AdminPayments() {
             newCount++;
         }
 
-        const schedule = generatePaymentSchedule(record as any, settings, holidayList);
+        const schedule = generatePaymentSchedule(record as Kayit, settings, holidayList);
         const toInsert = schedule.map(s => ({
           kayit_id: record.id,
           taksit_no: s.taksit_no,
@@ -537,8 +548,9 @@ export default function AdminPayments() {
 
       alert(`${updatedCount} adet mevcut plan güncellendi, ${newCount} adet yeni plan oluşturuldu.`);
       fetchData();
-    } catch (error: any) {
-      alert('Senkronizasyon hatası: ' + error.message);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Bilinmeyen bir hata oluştu';
+      alert('Senkronizasyon hatası: ' + message);
     } finally {
       setSyncing(false);
     }
@@ -707,7 +719,7 @@ export default function AdminPayments() {
             ].map(tab => (
               <button
                 key={tab.id}
-                onClick={() => setActiveTab(tab.id as any)}
+                onClick={() => setActiveTab(tab.id as 'banks' | 'holidays' | 'schedule' | 'analysis')}
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition-all ${activeTab === tab.id ? 'bg-card text-primary shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
               >
                 <tab.icon size={14} />
@@ -768,11 +780,11 @@ export default function AdminPayments() {
                         className="w-full bg-muted/50 border border-border rounded-2xl pl-11 pr-4 py-2.5 text-sm focus:ring-2 focus:ring-primary/20 outline-none transition-all font-bold"
                       />
                     </div>
-                    <div className="flex gap-2 w-full md:w-auto">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full md:w-auto">
                       <select 
                         value={bankFilter}
                         onChange={(e) => setBankFilter(e.target.value)}
-                        className="bg-muted/50 border border-border rounded-2xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-primary/20 outline-none transition-all font-bold min-w-[140px]"
+                        className="bg-muted/50 border border-border rounded-2xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-primary/20 outline-none transition-all font-bold w-full md:min-w-[140px]"
                       >
                         <option value="all">Tüm Bankalar</option>
                         {Array.from(new Set(schedule.map(i => i.kayitlar?.banka))).filter(Boolean).map(bank => (
@@ -782,7 +794,7 @@ export default function AdminPayments() {
                       <select 
                         value={subeFilter}
                         onChange={(e) => setSubeFilter(e.target.value)}
-                        className="bg-muted/50 border border-border rounded-2xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-primary/20 outline-none transition-all font-bold min-w-[140px]"
+                        className="bg-muted/50 border border-border rounded-2xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-primary/20 outline-none transition-all font-bold w-full md:min-w-[140px]"
                       >
                         <option value="all">Tüm Şubeler</option>
                         {Array.from(new Set(schedule.map(i => i.kayitlar?.sube_adi))).filter(Boolean).map(sube => (
@@ -793,42 +805,44 @@ export default function AdminPayments() {
                   </div>
                   
                   {/* Date Range Filter */}
-                  <div className="flex flex-wrap gap-4 items-center pt-2 border-t border-border/50">
-                    <span className="text-[10px] font-black uppercase text-muted-foreground tracking-widest pl-2">Vade Aralığı:</span>
-                    <div className="flex items-center gap-2">
-                       <input 
-                         type="date" 
-                         value={startDate}
-                         onChange={(e) => setStartDate(e.target.value)}
-                         className="bg-muted/50 border border-border rounded-xl px-3 py-1.5 text-xs font-bold outline-none focus:ring-2 focus:ring-primary/20"
-                       />
-                       <span className="text-muted-foreground">→</span>
-                       <input 
-                         type="date" 
-                         value={endDate}
-                         onChange={(e) => setEndDate(e.target.value)}
-                         className="bg-muted/50 border border-border rounded-xl px-3 py-1.5 text-xs font-bold outline-none focus:ring-2 focus:ring-primary/20"
-                       />
-                       {(startDate || endDate) && (
-                         <button 
-                           onClick={() => { setStartDate(''); setEndDate(''); }}
-                           className="text-[10px] font-bold text-destructive hover:underline ml-2"
-                         >
-                           Sıfırla
-                         </button>
-                       )}
+                  <div className="flex flex-col lg:flex-row gap-4 lg:items-center pt-4 border-t border-border/50">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <span className="text-[10px] font-black uppercase text-muted-foreground tracking-widest pl-2">Vade Aralığı:</span>
+                      <div className="flex items-center gap-2 flex-grow sm:flex-grow-0">
+                         <input 
+                           type="date" 
+                           value={startDate}
+                           onChange={(e) => setStartDate(e.target.value)}
+                           className="bg-muted/50 border border-border rounded-xl px-3 py-1.5 text-xs font-bold outline-none focus:ring-2 focus:ring-primary/20 w-full sm:w-auto"
+                         />
+                         <span className="text-muted-foreground">→</span>
+                         <input 
+                           type="date" 
+                           value={endDate}
+                           onChange={(e) => setEndDate(e.target.value)}
+                           className="bg-muted/50 border border-border rounded-xl px-3 py-1.5 text-xs font-bold outline-none focus:ring-2 focus:ring-primary/20 w-full sm:w-auto"
+                         />
+                         {(startDate || endDate) && (
+                           <button 
+                             onClick={() => { setStartDate(''); setEndDate(''); }}
+                             className="text-[10px] font-bold text-destructive hover:underline ml-1 whitespace-nowrap"
+                           >
+                             Sıfırla
+                           </button>
+                         )}
+                      </div>
                     </div>
 
-                    <div className="ml-auto flex gap-2">
+                    <div className="grid grid-cols-2 lg:flex gap-2 lg:ml-auto w-full lg:w-auto">
                        <button 
                          onClick={() => setShowExportModal(true)}
-                         className="flex items-center gap-2 text-xs font-black uppercase tracking-widest px-4 py-2 rounded-xl bg-emerald-500 text-white hover:bg-emerald-600 transition-all shadow-lg shadow-emerald-500/20"
+                         className="flex items-center justify-center gap-2 text-[10px] font-black uppercase tracking-widest px-4 py-2.5 rounded-xl bg-emerald-500 text-white hover:bg-emerald-600 transition-all shadow-lg shadow-emerald-500/20"
                        >
-                         <Download size={14} /> Excel İndir
+                         <Download size={14} /> <span className="hidden sm:inline">Excel</span> İndir
                        </button>
                       <button 
                         onClick={() => setShowDailySummary(!showDailySummary)}
-                        className={`text-xs font-black uppercase tracking-widest px-4 py-2 rounded-xl transition-all border ${showDailySummary ? 'bg-primary text-white border-primary' : 'bg-muted text-muted-foreground border-border hover:bg-muted/80'}`}
+                        className={`text-[10px] font-black uppercase tracking-widest px-4 py-2.5 rounded-xl transition-all border flex items-center justify-center ${showDailySummary ? 'bg-primary text-white border-primary' : 'bg-muted text-muted-foreground border-border hover:bg-muted/80'}`}
                       >
                         {showDailySummary ? 'Liste Görünümü' : 'Günlük Analiz'}
                       </button>
@@ -943,8 +957,8 @@ export default function AdminPayments() {
                    )}
                  </div>
                ) : (
-                <div className="bg-card rounded-3xl border border-border shadow-xl overflow-hidden">
-                  <table className="w-full text-left border-collapse">
+                <div className="bg-card rounded-3xl border border-border shadow-xl overflow-x-auto custom-scrollbar">
+                  <table className="w-full text-left border-collapse min-w-[1000px]">
                     <thead>
                       <tr className="bg-muted text-[11px] uppercase font-black text-foreground tracking-widest border-b border-border">
                         <th 
@@ -1071,7 +1085,7 @@ export default function AdminPayments() {
                      </div>
                   </div>
                   <div className="h-[350px] w-full">
-                     <ResponsiveContainer width="100%" height="100%">
+                     <ResponsiveContainer width="100%" height="100%" minHeight={350}>
                         <LineChart data={chartData} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(var(--foreground), 0.05)" />
                            <XAxis 
@@ -1096,7 +1110,7 @@ export default function AdminPayments() {
                                  fontSize: '11px',
                                  fontWeight: 900
                               }}
-                              formatter={(value: any) => [`₺${Number(value).toLocaleString('tr-TR')}`, '']}
+                              formatter={(value: string | number | readonly (string | number)[] | undefined) => value !== undefined ? [`₺${Number(value).toLocaleString('tr-TR')}`, ''] : ['', '']}
                            />
                            <Line 
                               type="monotone" 

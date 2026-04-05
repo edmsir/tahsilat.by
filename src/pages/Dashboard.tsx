@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { isToday } from 'date-fns';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../hooks/useAuth';
@@ -26,7 +26,7 @@ export default function Dashboard() {
   const role = user?.user_metadata?.role || 'branch';
   const sube = user?.user_metadata?.sube || 'Bilinmiyor';
 
-  const fetchTarget = async () => {
+  const fetchTarget = useCallback(async () => {
     try {
       const { data, error } = await supabase
         .from('hedefler')
@@ -41,9 +41,9 @@ export default function Dashboard() {
     } catch (error) {
       console.error('Error fetching target:', error);
     }
-  };
+  }, [sube]);
 
-  const fetchRecords = async () => {
+  const fetchRecords = useCallback(async () => {
     setRefreshing(true);
     try {
       let query = supabase
@@ -66,12 +66,12 @@ export default function Dashboard() {
       setLoading(false);
       setRefreshing(false);
     }
-  };
+  }, [role, sube]);
 
   useEffect(() => {
     fetchRecords();
     fetchTarget();
-  }, [sube]);
+  }, [fetchRecords, fetchTarget]);
 
   const handleExport = () => {
     exportToExcel(records);

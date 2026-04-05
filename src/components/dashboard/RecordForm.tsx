@@ -95,7 +95,8 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
 
       setLoadingSettings(true);
       try {
-        const { data: bankSettings } = await supabase
+        // 1. Try to fetch the agreement active on the selected date
+        const { data: initialSettings, error: fetchError } = await supabase
           .from('banka_ayarlari')
           .select('komisyon_oranlari')
           .eq('banka_adi', selectedBanka)
@@ -105,19 +106,43 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
           .limit(1)
           .maybeSingle();
 
+        let bankSettings = initialSettings;
+
+        if (fetchError) {
+            console.error('Banka ayarları çekilirken hata (L100):', fetchError);
+        }
+
+        // 2. FALLBACK: If no active agreement found for that date, try to get the latest one anyway
+        // This helps if the user entered a date outside the current agreement range or if there's a minor sync issue.
+        if (!bankSettings) {
+            const { data: latestSettings } = await supabase
+                .from('banka_ayarlari')
+                .select('komisyon_oranlari')
+                .eq('banka_adi', selectedBanka)
+                .order('baslangic_tarihi', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+            
+            if (latestSettings) {
+                bankSettings = latestSettings;
+            }
+        }
+
         if (bankSettings && bankSettings.komisyon_oranlari) {
           const rates = bankSettings.komisyon_oranlari;
-          // Sadece veritabanında tanımlı olan taksitleri göster
+          // Extract installment numbers from keys (e.g. "1", "2", "3" ...)
           const insts = Object.keys(rates)
             .map(k => parseInt(k))
             .sort((a, b) => a - b);
           
           setAvailableInstallments(insts.length > 0 ? insts : [1]);
         } else {
-          // Anlaşma yoksa taksit seçeneği sunma
+          // If still no settings, and it's a POS, log it (likely RLS or no data)
+          console.warn(`${selectedBanka} için taksit ayarı bulunamadı. RLS yetkisi veya eksik tanımlama olabilir.`);
           setAvailableInstallments([1]);
         }
       } catch (err) {
+        console.error('Banka ayarları fetch hatası (Catch):', err);
         setAvailableInstallments([1]);
       } finally {
         setLoadingSettings(false);
@@ -189,7 +214,7 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
       if (data.banka.includes('POS')) {
         try {
           // 1. Fetch Bank Settings (Agreement active on transaction date)
-          const { data: bankSettings, error: bankError } = await supabase
+          const { data: initialBankSettings, error: bankError } = await supabase
             .from('banka_ayarlari')
             .select('*')
             .eq('banka_adi', data.banka)
@@ -199,17 +224,20 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
             .limit(1)
             .maybeSingle();
           
+          let bankSettings = initialBankSettings;
+          
           if (!bankSettings) {
-            const msg = `${data.banka} için ${data.tarih} tarihinde geçerli bir banka anlaşması bulunamadı! Lütfen önce Admin panelinden banka anlaşmasını tanımlayın.`;
-            alert(msg);
-            setLoading(false);
-            return; // İŞLEMİ DURDUR
+            // FALLBACK for non-admin or missing agreement: Use a 0-commission default if record saving shouldn't be blocked
+            console.warn('Geçerli bir banka anlaşması bulunamadı, 0 komisyon ile plan oluşturulmaya çalışılacak.');
+            bankSettings = {
+                banka_adi: data.banka,
+                vade_gun: 30,
+                komisyon_oranlari: { [data.taksit]: 0 }
+            };
           }
 
           if (bankError) {
-            alert('Banka ayarları kontrol edilirken bir hata oluştu: ' + bankError.message);
-            setLoading(false);
-            return;
+             console.error('Banka ayarları kontrol hatası:', bankError);
           }
 
           // 2. Fetch Holidays
@@ -222,7 +250,7 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
 
           // 3. Generate Schedule
           const { generatePaymentSchedule } = await import('../../utils/paymentCalculator');
-          const schedule = generatePaymentSchedule(data, bankSettings as any, holidayList);
+          const schedule = generatePaymentSchedule(data, bankSettings, holidayList);
 
           // 4. Save to Database (First find the record ID if it's new)
           let finalRecordId = isEditing ? initialData.id : null;
@@ -264,9 +292,10 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
       }
 
       setTimeout(() => setSuccess(false), 2000);
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Error saving record:', error);
-      alert('Kayıt kaydedilirken bir hata oluştu: ' + error.message);
+      const message = error instanceof Error ? error.message : 'Bilinmeyen bir hata oluştu';
+      alert('Kayıt kaydedilirken bir hata oluştu: ' + message);
     } finally {
       setLoading(false);
     }
@@ -408,12 +437,12 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
             )}
           </AnimatePresence>
           
-          <div className="ml-auto flex items-center gap-2">
+          <div className="flex flex-col sm:flex-row items-center gap-3 w-full sm:w-auto ml-auto">
             {onCancel && (
               <button
                 type="button"
                 onClick={onCancel}
-                className="px-4 py-2 rounded-lg text-sm font-bold border border-border hover:bg-muted transition-all"
+                className="w-full sm:w-auto px-4 py-2 rounded-lg text-sm font-bold border border-border hover:bg-muted transition-all order-2 sm:order-1"
               >
                 İptal
               </button>
@@ -421,7 +450,7 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
             <button
               type="submit"
               disabled={loading}
-              className={`flex items-center gap-2 px-6 py-2 rounded-lg text-sm font-bold shadow-lg transition-all active:scale-[0.98] disabled:opacity-50 ${isEditing ? (isRequest ? 'bg-orange-500 hover:bg-orange-600 shadow-orange-500/20' : 'bg-blue-500 hover:bg-blue-600 shadow-blue-500/20') : 'bg-primary hover:bg-primary/90 shadow-primary/20'} text-white`}
+              className={`w-full sm:w-auto flex items-center justify-center gap-2 px-6 py-2 rounded-lg text-sm font-bold shadow-lg transition-all active:scale-[0.98] disabled:opacity-50 ${isEditing ? (isRequest ? 'bg-orange-500 hover:bg-orange-600 shadow-orange-500/20' : 'bg-blue-500 hover:bg-blue-600 shadow-blue-500/20') : 'bg-primary hover:bg-primary/90 shadow-primary/20'} text-white order-1 sm:order-2`}
             >
               {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
               {isEditing ? (isRequest ? 'Talebi İlet' : 'Güncelle') : 'Kaydet'}

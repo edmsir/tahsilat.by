@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../hooks/useAuth';
 import type { Sube } from '../types';
@@ -29,11 +29,7 @@ export default function AdminTargets() {
   const currentMonth = getMonth(new Date()) + 1;
   const currentYear = new Date().getFullYear();
 
-  useEffect(() => {
-    fetchHedefler();
-  }, []);
-
-  const fetchHedefler = async () => {
+  const fetchHedefler = useCallback(async () => {
     setLoading(true);
     try {
       const { data, error } = await supabase
@@ -54,7 +50,11 @@ export default function AdminTargets() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [currentMonth, currentYear]);
+
+  useEffect(() => {
+    fetchHedefler();
+  }, [fetchHedefler]);
 
   const handleSave = async (sube: string) => {
     const tutar = hedefler[sube] || 0;
@@ -76,8 +76,9 @@ export default function AdminTargets() {
       
       setSuccess(sube);
       setTimeout(() => setSuccess(null), 2000);
-    } catch (error: any) {
-      alert('Hata: ' + error.message);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Bilinmeyen bir hata oluştu';
+      alert('Hata: ' + message);
     } finally {
       setSaving(null);
     }

@@ -31,7 +31,7 @@ export default function TaksitChart({ records }: TaksitChartProps) {
   const COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444'];
 
   return (
-    <div className="glassmorphism p-6 rounded-2xl shadow-lg border border-border/50 h-[450px] flex flex-col">
+    <div className="glassmorphism p-6 rounded-2xl shadow-lg border border-border/50 h-[350px] md:h-[450px] flex flex-col">
       <div className="mb-4">
         <h3 className="text-lg font-bold text-foreground">Taksit Analizi</h3>
         <p className="text-xs text-muted-foreground mt-1">İşlem tutarlarının taksit oranlarına göre dağılımı.</p>
@@ -60,20 +60,23 @@ export default function TaksitChart({ records }: TaksitChartProps) {
                 borderRadius: '12px',
                 color: '#fff'
               }}
-              formatter={(value: any, name: any, props: any) => [
-                `${value} İşlem (${new Intl.NumberFormat('tr-TR').format(Number(props.payload.total))} TL)`,
-                name
-              ]}
+              formatter={(value: string | number | readonly (string | number)[] | undefined, name: string | number | boolean | null | undefined, props: { payload?: { total: number } }) => {
+                if (value === undefined || value === null) return ['', String(name)];
+                return [
+                  `${String(value)} İşlem (${new Intl.NumberFormat('tr-TR').format(Number(props.payload?.total || 0))} TL)`,
+                  String(name)
+                ];
+              }}
             />
             <Legend
               verticalAlign="bottom"
               height={36}
               content={({ payload }) => (
                 <div className="flex flex-wrap justify-center gap-4 mt-4">
-                  {payload?.map((entry: any, index: number) => (
+                  {payload?.map((entry: { value?: string | number | boolean | null | undefined; color?: string }, index: number) => (
                     <div key={`legend-${index}`} className="flex items-center gap-2">
                       <div className="w-3 h-3 rounded-full" style={{ backgroundColor: entry.color }} />
-                      <span className="text-xs text-muted-foreground">{entry.value}</span>
+                      <span className="text-xs text-muted-foreground">{String(entry.value)}</span>
                     </div>
                   ))}
                 </div>
