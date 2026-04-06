@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
+import { logAction } from '../utils/logger';
 import type { User, Session } from '@supabase/supabase-js';
 
 interface AuthContextType {
@@ -37,6 +38,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const signOut = async () => {
+    if (user) {
+      await logAction({
+        userId: user.id,
+        subeAdi: user.user_metadata?.sube || 'Bilinmiyor',
+        action: 'LOGOUT',
+        details: { islem: 'LOGOUT_SUCCESS' }
+      });
+    }
     await supabase.auth.signOut();
   };
 

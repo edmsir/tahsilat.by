@@ -44,6 +44,7 @@ import {
 } from 'date-fns';
 import { tr } from 'date-fns/locale';
 import { motion, AnimatePresence } from 'framer-motion';
+import { logAction } from '../utils/logger';
 import { 
   LineChart, 
   Line, 
@@ -76,6 +77,23 @@ export default function AdminPayments() {
   const [showExportModal, setShowExportModal] = useState(false);
   const [statusLoading, setStatusLoading] = useState<string | null>(null);
   const [expandedBank, setExpandedBank] = useState<string | null>(null);
+  const [syncStatus, setSyncStatus] = useState<{ 
+    isOpen: boolean, 
+    current: number, 
+    total: number, 
+    updated: number, 
+    skipped: number, 
+    errors: number, 
+    logs: string[] 
+  }>({ 
+    isOpen: false, 
+    current: 0, 
+    total: 0, 
+    updated: 0, 
+    skipped: 0, 
+    errors: 0, 
+    logs: [] 
+  });
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -414,6 +432,21 @@ export default function AdminPayments() {
       
       if (error) throw error;
       
+      const updatedItem = schedule.find(i => i.id === itemId);
+      // AUDIT LOG: Ödeme Durumu Güncelleme
+      await logAction({
+        userId: user?.id || '',
+        subeAdi: 'MERKEZ',
+        action: 'KAYIT_DUZENLEME',
+        details: { 
+          islem: 'ODEME_DURUM_DEGISTIRME',
+          banka: updatedItem?.kayitlar?.banka,
+          musteri: updatedItem?.kayitlar?.musteri_adi,
+          taksit: updatedItem?.taksit_no,
+          yeni_durum: newStatus
+        }
+      });
+
       setSchedule(prev => prev.map(item => 
         item.id === itemId ? { ...item, durum: newStatus } : item
       ));
@@ -481,10 +514,20 @@ export default function AdminPayments() {
   };
 
   const handleSyncRecords = async () => {
-    const shouldOverwrite = window.confirm('Tüm POS kayıtları taranacak. Mevcut "BEKLEMEDE" olan planlar silinip GÜNCEL komisyonlarla yeniden oluşturulacak. (Ödenmiş/YATTI olan taksitler korunur). Devam edilsin mi?');
+    const shouldOverwrite = window.confirm('Tüm POS kayıtları taranacak. Mevcut "BEKLEMEDE" olan planlar silinip GÜNCEL komisyonlarla yeniden oluşturulacak. (Ödenmiş/YATTI olan taksitler korunur). Bu işlem kademeli olarak yapılacaktır. Devam edilsin mi?');
     if (!shouldOverwrite) return;
     
     setSyncing(true);
+    setSyncStatus({ 
+      isOpen: true, 
+      current: 0, 
+      total: 0, 
+      updated: 0, 
+      skipped: 0, 
+      errors: 0, 
+      logs: ['🔍 İşlem başlatılıyor...', '📦 Veritabanı bağlantısı kuruluyor...'] 
+    });
+
     try {
       // 1. Fetch all POS records
       const { data: posRecords, error: recError } = await supabase
@@ -494,9 +537,11 @@ export default function AdminPayments() {
       
       if (recError) throw recError;
       if (!posRecords || posRecords.length === 0) {
-        alert('Taranacak POS kaydı bulunamadı.');
+        setSyncStatus(prev => ({ ...prev, logs: [...prev.logs, '❌ Taranacak POS kaydı bulunamadı.'] }));
         return;
       }
+
+      setSyncStatus(prev => ({ ...prev, total: posRecords.length, logs: [...prev.logs, `📁 ${posRecords.length} adet POS kaydı bulundu.`] }));
 
       // 2. Fetch Bank Settings
       const { data: bankSettings, error: bankError } = await supabase.from('banka_ayarlari').select('*');
@@ -507,56 +552,77 @@ export default function AdminPayments() {
       if (holidayError) throw holidayError;
       const holidayList = holidaysData.map(h => h.tarih);
 
-      // 4. Generate & Insert for each
+      // 4. Batch Processing (Kademeli İşlem)
       const { generatePaymentSchedule } = await import('../utils/paymentCalculator');
+      const BATCH_SIZE = 50;
       
-      let updatedCount = 0;
-      let newCount = 0;
-
-      for (const record of posRecords) {
-        const settings = bankSettings.find(b => b.banka_adi === record.banka);
-        if (!settings) continue;
-
-        // Mevcut planı kontrol et
-        const { data: existingPlan } = await supabase
-          .from('odeme_plani')
-          .select('*')
-          .eq('kayit_id', record.id);
-        
-        const hasPaidInstallments = existingPlan?.some(i => i.durum === 'YATTI');
-
-        if (hasPaidInstallments) {
-            // Ödenmiş taksit varsa risk almamak için bu kaydı atla veya sadece bekleyenleri güncelle (şimdilik güvenli liman: atla)
-            continue;
-        }
-
-        // Ödenmiş taksit yoksa, eskiyi sil ve yeniyi oluştur
-        if (existingPlan && existingPlan.length > 0) {
-            await supabase.from('odeme_plani').delete().eq('kayit_id', record.id);
-            updatedCount++;
-        } else {
-            newCount++;
-        }
-
-        const schedule = generatePaymentSchedule(record as Kayit, settings, holidayList);
-        const toInsert = schedule.map(s => ({
-          kayit_id: record.id,
-          taksit_no: s.taksit_no,
-          planlanan_tarih: s.planlanan_tarih,
-          net_tutar: s.net_tutar,
-          komisyon_tutar: s.komisyon_tutar,
-          ana_tutar: s.ana_tutar,
-          durum: 'BEKLEMEDE'
+      for (let i = 0; i < posRecords.length; i += BATCH_SIZE) {
+        const chunk = posRecords.slice(i, i + BATCH_SIZE);
+        setSyncStatus(prev => ({ 
+          ...prev, 
+          current: Math.min(i + BATCH_SIZE, posRecords.length),
+          logs: [...prev.logs, `🕒 Paket işleniyor: ${i + 1}-${Math.min(i + BATCH_SIZE, posRecords.length)} arası...`]
         }));
-        
-        await supabase.from('odeme_plani').insert(toInsert);
+
+        for (const record of chunk) {
+          try {
+            const settings = bankSettings.find(b => b.banka_adi === record.banka);
+            if (!settings) {
+              setSyncStatus(prev => ({ ...prev, skipped: prev.skipped + 1 }));
+              continue;
+            }
+
+            // Mevcut planı kontrol et
+            const { data: existingPlan } = await supabase
+              .from('odeme_plani')
+              .select('id, durum')
+              .eq('kayit_id', record.id);
+            
+            const hasPaidInstallments = existingPlan?.some(inst => inst.durum === 'YATTI');
+
+            if (hasPaidInstallments) {
+              setSyncStatus(prev => ({ ...prev, skipped: prev.skipped + 1 }));
+              continue;
+            }
+
+            // Ödenmiş taksit yoksa, eskiyi sil ve yeniyi oluştur
+            if (existingPlan && existingPlan.length > 0) {
+              await supabase.from('odeme_plani').delete().eq('kayit_id', record.id);
+              setSyncStatus(prev => ({ ...prev, updated: prev.updated + 1 }));
+            } else {
+              setSyncStatus(prev => ({ ...prev, updated: prev.updated + 1 }));
+            }
+
+            const schedule = generatePaymentSchedule(record as Kayit, settings, holidayList);
+            const toInsert = schedule.map(s => ({
+              kayit_id: record.id,
+              taksit_no: s.taksit_no,
+              planlanan_tarih: s.planlanan_tarih,
+              net_tutar: s.net_tutar,
+              komisyon_tutar: s.komisyon_tutar,
+              ana_tutar: s.ana_tutar,
+              durum: 'BEKLEMEDE'
+            }));
+            
+            await supabase.from('odeme_plani').insert(toInsert);
+          } catch (err) {
+            console.error('Record Sync Error:', err);
+            setSyncStatus(prev => ({ ...prev, errors: prev.errors + 1 }));
+          }
+        }
+
+        // 100ms Mola (Tarayıcıyı ferahlatmak için)
+        await new Promise(r => setTimeout(r, 100));
       }
 
-      alert(`${updatedCount} adet mevcut plan güncellendi, ${newCount} adet yeni plan oluşturuldu.`);
+      setSyncStatus(prev => ({ 
+        ...prev, 
+        logs: [...prev.logs, '✅ Senkronizasyon başarıyla tamamlandı.', '🏆 Tüm kayıtlar güncel durumda.'] 
+      }));
       fetchData();
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Bilinmeyen bir hata oluştu';
-      alert('Senkronizasyon hatası: ' + message);
+      setSyncStatus(prev => ({ ...prev, logs: [...prev.logs, `❌ KRİTİK HATA: ${message}`] }));
     } finally {
       setSyncing(false);
     }
@@ -569,6 +635,98 @@ export default function AdminPayments() {
   return (
     <MainLayout>
       <AnimatePresence>
+        {syncStatus.isOpen && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-card w-full max-w-2xl overflow-hidden rounded-[32px] border border-border shadow-2xl flex flex-col max-h-[80vh]"
+            >
+              <div className="bg-primary/5 px-8 py-6 border-b border-border flex justify-between items-center">
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 bg-primary/20 rounded-2xl flex items-center justify-center">
+                    <RefreshCw className={`w-6 h-6 text-primary ${syncing ? 'animate-spin' : ''}`} />
+                  </div>
+                  <div>
+                    <h2 className="text-xl font-black text-foreground tracking-tighter">Operasyon Kontrol Paneli</h2>
+                    <p className="text-[10px] text-muted-foreground uppercase font-black tracking-widest mt-0.5">Kademeli Senkronizasyon Raporu</p>
+                  </div>
+                </div>
+                {!syncing && (
+                  <button 
+                    onClick={() => setSyncStatus(prev => ({ ...prev, isOpen: false }))}
+                    className="p-2 hover:bg-muted rounded-full transition-colors"
+                  >
+                    <X size={24} />
+                  </button>
+                )}
+              </div>
+
+              <div className="p-8 flex-1 overflow-hidden flex flex-col space-y-6">
+                {/* Progress Stats */}
+                <div className="grid grid-cols-4 gap-4">
+                  {[
+                    { label: 'Taranan', value: syncStatus.current, total: syncStatus.total, color: 'text-primary' },
+                    { label: 'Eşlenen', value: syncStatus.updated, color: 'text-emerald-500' },
+                    { label: 'Atlanan', value: syncStatus.skipped, color: 'text-orange-500' },
+                    { label: 'Hata', value: syncStatus.errors, color: 'text-destructive' }
+                  ].map((s, idx) => (
+                    <div key={idx} className="bg-muted/30 p-4 rounded-2xl border border-border/50 text-center">
+                      <p className="text-[9px] font-black uppercase text-muted-foreground mb-1">{s.label}</p>
+                      <p className={`text-xl font-black ${s.color}`}>
+                        {s.value}{idx === 0 && s.total && s.total > 0 ? ` / ${s.total}` : ''}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Progress Bar */}
+                <div className="space-y-2">
+                  <div className="flex justify-between items-center px-1">
+                    <span className="text-[10px] font-black text-muted-foreground uppercase tracking-widest">Genel İlerleme</span>
+                    <span className="text-[10px] font-black text-primary uppercase">%{syncStatus.total > 0 ? Math.round((syncStatus.current / syncStatus.total) * 100) : 0}</span>
+                  </div>
+                  <div className="h-3 bg-muted/50 rounded-full overflow-hidden border border-border/50">
+                    <motion.div 
+                      className="h-full bg-primary"
+                      initial={{ width: 0 }}
+                      animate={{ width: `${syncStatus.total > 0 ? (syncStatus.current / syncStatus.total) * 100 : 0}%` }}
+                    />
+                  </div>
+                </div>
+
+                {/* Live Logs */}
+                <div className="flex-1 bg-black/20 rounded-2xl border border-border/50 p-4 font-mono text-[11px] overflow-y-auto space-y-1 custom-scrollbar scroll-smooth">
+                  {syncStatus.logs.map((log, idx) => (
+                    <div key={idx} className={`flex items-start gap-2 ${log.includes('✅') ? 'text-emerald-400' : log.includes('❌') ? 'text-destructive' : 'text-muted-foreground'}`}>
+                      <span className="opacity-30">[{new Date().toLocaleTimeString('tr-TR')}]</span>
+                      <span>{log}</span>
+                    </div>
+                  ))}
+                  <div id="sync-logs-end" />
+                </div>
+              </div>
+
+              <div className="px-8 py-6 bg-muted/30 border-t border-border flex justify-end gap-3">
+                {syncing ? (
+                  <div className="flex items-center gap-3 text-primary animate-pulse">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span className="text-[10px] font-black uppercase tracking-widest">İşlem Devam Ediyor, Lütfen Sekmeyi Kapatmayın...</span>
+                  </div>
+                ) : (
+                  <button 
+                    onClick={() => setSyncStatus(prev => ({ ...prev, isOpen: false }))}
+                    className="bg-primary text-white px-8 py-3 rounded-2xl text-xs font-black uppercase tracking-widest shadow-lg shadow-primary/20 hover:scale-102 active:scale-98 transition-all"
+                  >
+                    Raporu Kapat ve Bitir
+                  </button>
+                )}
+              </div>
+            </motion.div>
+          </div>
+        )}
+
         {selectedItem && (
           <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
             <motion.div 
@@ -1091,7 +1249,7 @@ export default function AdminPayments() {
                      </div>
                   </div>
                   <div className="h-[350px] w-full min-h-[350px]">
-                     <ResponsiveContainer width="100%" height="100%" minHeight={350}>
+                     <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={350}>
                          <LineChart data={chartData} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
                             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(var(--foreground), 0.05)" />
                             <XAxis 

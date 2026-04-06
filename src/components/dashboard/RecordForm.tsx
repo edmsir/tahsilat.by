@@ -3,10 +3,12 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../hooks/useAuth';
+import { logAction } from '../../utils/logger';
 import type { Sube, Kayit } from '../../types';
-import { Loader2, Plus, Save, CheckCircle2, X } from 'lucide-react';
+import { Loader2, Plus, Save, CheckCircle2, X, FileSpreadsheet } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import BulkImportModal from './BulkImportModal';
 
 const subeler: Sube[] = ['MERKEZ', 'ANKARA', 'BURSA', 'BAYRAMPAŞA', 'MODOKO', 'İZMİR', 'MALZEME'];
 
@@ -33,6 +35,7 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
   const { user } = useAuth();
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [isBulkModalOpen, setIsBulkModalOpen] = useState(false);
   
   const isEditing = !!initialData;
   const role = user?.user_metadata?.role as string;
@@ -177,7 +180,7 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
     try {
       if (isEditing) {
         if (isRequest) {
-          const { error } = await supabase.from('talepler').insert({
+          const { error: reqError } = await supabase.from('talepler').insert({
             kayit_id: initialData.id,
             tip: 'DUZENLEME',
             yeni_veri: data,
@@ -185,21 +188,45 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
             talep_eden_id: user?.id,
             durum: 'BEKLEMEDE'
           });
-          if (error) throw error;
+          if (reqError) throw reqError;
+
+          // AUDIT LOG: Düzenleme Talebi
+          await logAction({
+            userId: user?.id || '',
+            subeAdi: currentSube,
+            action: 'KAYIT_DUZENLEME',
+            details: { id: initialData.id, type: 'REQUEST', ...data }
+          });
         } else {
-          const { error } = await supabase
+          const { error: updateError } = await supabase
             .from('kayitlar')
             .update(data)
             .eq('id', initialData.id);
-          if (error) throw error;
+          if (updateError) throw updateError;
+
+          // AUDIT LOG: Kayıt Düzenleme (Direkt)
+          await logAction({
+            userId: user?.id || '',
+            subeAdi: currentSube,
+            action: 'KAYIT_DUZENLEME',
+            details: { id: initialData.id, ...data }
+          });
         }
       } else {
-        const { error } = await supabase.from('kayitlar').insert({
+        const { error: insertError } = await supabase.from('kayitlar').insert({
           ...data,
           sube_adi: currentSube,
           user_id: user?.id,
         });
-        if (error) throw error;
+        if (insertError) throw insertError;
+        
+        // AUDIT LOG: Yeni Kayıt
+        await logAction({
+          userId: user?.id || '',
+          subeAdi: currentSube,
+          action: 'KAYIT_OLUSTURMA',
+          details: { ...data, sube_adi: currentSube }
+        });
       }
 
       setSuccess(true);
@@ -306,7 +333,8 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
   };
 
   return (
-    <div className={`${isEditing ? '' : 'glassmorphism p-4 rounded-xl shadow-lg'} relative overflow-hidden transition-all text-foreground`}>
+    <>
+      <div className={`${isEditing ? '' : 'glassmorphism p-4 rounded-xl shadow-lg'} relative overflow-hidden transition-all text-foreground`}>
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <div className={`w-8 h-8 ${isEditing ? 'bg-blue-500/20' : 'bg-primary/20'} rounded-full flex items-center justify-center`}>
@@ -316,11 +344,23 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
             {isEditing ? (isRequest ? 'Düzenleme Talebi Oluştur' : 'Kaydı Düzenle') : 'Yeni Kayıt Girişi'}
           </h2>
         </div>
-        {onCancel && (
-          <button onClick={onCancel} className="p-1 hover:bg-muted rounded-full transition-colors">
-            <X className="w-5 h-5 text-muted-foreground" />
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {!isEditing && (
+            <button
+              type="button"
+              onClick={() => setIsBulkModalOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-green-500/10 hover:bg-green-500/20 text-green-500 border border-green-500/20 hover:border-green-500/40 rounded-lg text-xs font-bold transition-all"
+            >
+              <FileSpreadsheet className="w-4 h-4" />
+              <span className="hidden sm:inline">Excel'den Yükle</span>
+            </button>
+          )}
+          {onCancel && (
+            <button onClick={onCancel} className="p-1 hover:bg-muted rounded-full transition-colors">
+              <X className="w-5 h-5 text-muted-foreground" />
+            </button>
+          )}
+        </div>
       </div>
 
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-3">
@@ -463,6 +503,16 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
           </div>
         </div>
       </form>
-    </div>
+      </div>
+      
+      <BulkImportModal 
+         isOpen={isBulkModalOpen} 
+         onClose={() => setIsBulkModalOpen(false)} 
+         onSuccess={() => {
+            if (onSuccess) onSuccess();
+         }} 
+         currentSube={currentSube}
+      />
+    </>
   );
 }

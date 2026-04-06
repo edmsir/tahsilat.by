@@ -7,7 +7,7 @@ import MainLayout from '../components/layout/MainLayout';
 import StatsCards from '../components/dashboard/StatsCards';
 import RecordForm from '../components/dashboard/RecordForm';
 import RecordsTable from '../components/dashboard/RecordsTable';
-import { exportToExcel } from '../utils/excelExport';
+import { exportToExcel } from '../utils/excelUtils';
 import { motion } from 'framer-motion';
 import { FileDown, RefreshCcw, PlusCircle, Table as TableIcon } from 'lucide-react';
 import EditRecordModal from '../components/dashboard/EditRecordModal';
@@ -15,8 +15,11 @@ import EditRecordModal from '../components/dashboard/EditRecordModal';
 export default function Dashboard() {
   const { user } = useAuth();
   const [records, setRecords] = useState<Kayit[]>([]);
+  const [allMonthRecords, setAllMonthRecords] = useState<Kayit[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [page, setPage] = useState(0);
+  const [hasMore, setHasMore] = useState(true);
   const [activeTab, setActiveTab] = useState<'records' | 'new'>('records');
   const [editingRecord, setEditingRecord] = useState<Kayit | null>(null);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
@@ -26,6 +29,8 @@ export default function Dashboard() {
   const role = (user?.user_metadata?.role as 'admin' | 'branch') || 'branch';
   const sube = (user?.user_metadata?.sube as string) || 'Bilinmiyor';
   const isAdmin = role === 'admin';
+
+  const PAGE_SIZE = 20;
 
   const fetchTarget = useCallback(async () => {
     try {
@@ -44,15 +49,46 @@ export default function Dashboard() {
     }
   }, [sube]);
 
-  const fetchRecords = useCallback(async () => {
-    setRefreshing(true);
+  // KOTA DOSTU: Sadece istatistikler için gerekli hafif kolonları çek (Aylık)
+  const fetchMonthStats = useCallback(async () => {
+    try {
+      const firstDay = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
+      let query = supabase
+        .from('kayitlar')
+        .select('tutar, tarih, musteri_adi, sube_adi')
+        .gte('tarih', firstDay);
+
+      if (role !== 'admin') {
+        query = query.eq('sube_adi', sube);
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+      setAllMonthRecords(data as Kayit[] || []);
+    } catch (error) {
+      console.error('Error fetching stats:', error);
+    }
+  }, [role, sube]);
+
+  // PERFORMANS: Tablo için sadece limitli veri çek
+  const fetchRecords = useCallback(async (isRefreshing = false) => {
+    if (isRefreshing) {
+      setRefreshing(true);
+      setPage(0);
+    }
+    
+    const currentPage = isRefreshing ? 0 : page;
+    const from = currentPage * PAGE_SIZE;
+    const to = from + PAGE_SIZE - 1;
+
     try {
       let query = supabase
         .from('kayitlar')
         .select('*')
-        .order('tarih', { ascending: false });
+        .order('tarih', { ascending: false })
+        .order('created_at', { ascending: false })
+        .range(from, to);
 
-      // Role check (Admin can see all, Branch only their own)
       if (role !== 'admin') {
         query = query.eq('sube_adi', sube);
       }
@@ -60,19 +96,34 @@ export default function Dashboard() {
       const { data, error } = await query;
 
       if (error) throw error;
-      setRecords(data || []);
+      
+      if (isRefreshing) {
+        setRecords(data || []);
+      } else {
+        setRecords(prev => {
+          const newRecords = data || [];
+          // Mükerrer kayıtları engelle (De-duplication)
+          const existingIds = new Set(prev.map(r => r.id));
+          const uniqueNewRecords = newRecords.filter(r => !existingIds.has(r.id));
+          return [...prev, ...uniqueNewRecords];
+        });
+      }
+      
+      setHasMore(data?.length === PAGE_SIZE);
+      if (!isRefreshing) setPage(prev => prev + 1);
     } catch (error) {
       console.error('Error fetching records:', error);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [role, sube]);
+  }, [role, sube, page]);
 
   useEffect(() => {
-    fetchRecords();
+    fetchRecords(true);
+    fetchMonthStats();
     fetchTarget();
-  }, [fetchRecords, fetchTarget]);
+  }, [fetchMonthStats, fetchTarget]); // Removed fetchRecords(true) from here to prevent loops, called initially
 
   const handleExport = () => {
     exportToExcel(records);
@@ -100,7 +151,7 @@ export default function Dashboard() {
 
         <div className="flex items-center gap-3">
           <button
-            onClick={fetchRecords}
+            onClick={() => fetchRecords(true)}
             disabled={refreshing}
             className="flex items-center gap-2 bg-muted hover:bg-muted/80 text-foreground px-4 py-2 rounded-xl text-sm font-medium transition-all"
           >
@@ -118,7 +169,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <StatsCards records={records} targetAmount={targetAmount} />
+      <StatsCards records={allMonthRecords} targetAmount={targetAmount} />
 
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
         <div className="lg:col-span-9 space-y-6">
@@ -157,13 +208,26 @@ export default function Dashboard() {
                 <RecordsTable 
                   records={records} 
                   loading={loading} 
-                  onRefresh={fetchRecords}
+                  onRefresh={() => fetchRecords(true)}
                   onEdit={(record) => {
                     setEditingRecord(record);
                     setIsEditRequest(role !== 'admin');
                     setIsEditModalOpen(true);
                   }}
                 />
+                
+                {hasMore && (
+                  <div className="flex justify-center pt-4">
+                    <button
+                      onClick={() => fetchRecords(false)}
+                      disabled={loading}
+                      className="px-8 py-3 bg-primary/10 text-primary hover:bg-primary hover:text-white rounded-2xl text-sm font-bold transition-all disabled:opacity-50 flex items-center gap-2 group"
+                    >
+                      {loading ? <RefreshCcw className="w-4 h-4 animate-spin" /> : <PlusCircle className="w-4 h-4 group-hover:rotate-90 transition-transform" />}
+                      Daha Fazla Yükle
+                    </button>
+                  </div>
+                )}
               </div>
             )}
             

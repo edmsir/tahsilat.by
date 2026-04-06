@@ -13,6 +13,7 @@ import {
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { supabase } from '../../lib/supabase';
+import { motion } from 'framer-motion';
 
 interface RecordsTableProps {
   records: Kayit[];
@@ -159,70 +160,91 @@ export default function RecordsTable({ records, loading, onRefresh, onEdit }: Re
   return (
     <div className="space-y-4">
       {/* Mobile Card View */}
+      {/* Mobile Card View - Premium & Ergonomic */}
       <div className="grid grid-cols-1 gap-4 md:hidden">
         {sortedRecords.map((record) => {
           const direct = canEditDirectly();
           const isPending = pendingRequests.includes(record.id);
           
           return (
-            <div key={record.id} className="glassmorphism p-4 rounded-2xl border border-border/50 bg-card/30 space-y-3 relative overflow-hidden group">
-              <div className="flex justify-between items-start">
+            <motion.div 
+              key={record.id} 
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="glassmorphism p-5 rounded-3xl border border-border/50 bg-card/40 relative overflow-hidden group shadow-lg active:scale-[0.98] transition-all"
+            >
+              {/* Header Info */}
+              <div className="flex justify-between items-start mb-4">
                 <div className="space-y-1">
-                  <div className="text-[10px] font-black uppercase text-muted-foreground tracking-widest">
-                    {format(new Date(record.tarih), 'dd MMMM yyyy', { locale: tr })}
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
+                    <span className="text-[10px] font-black uppercase text-muted-foreground tracking-widest">
+                      {format(new Date(record.tarih), 'dd MMM yyyy', { locale: tr })}
+                    </span>
                   </div>
-                  <div className="text-sm font-bold text-foreground">
+                  <h4 className="text-base font-black text-foreground leading-tight line-clamp-1 italic italic-none">
                     {record.musteri_adi}
-                  </div>
+                  </h4>
                 </div>
                 <div className="text-right">
-                  <div className="text-sm font-black text-primary">
-                    ₺{new Intl.NumberFormat('tr-TR', { minimumFractionDigits: 2 }).format(record.tutar)}
+                  <div className="text-lg font-black text-primary tracking-tighter leading-none">
+                    ₺{new Intl.NumberFormat('tr-TR', { minimumFractionDigits: 2 }).format(record.tutar).replace('₺', '')}
                   </div>
-                  <div className="text-[10px] font-bold text-muted-foreground uppercase">
-                    {record.banka} {record.taksit > 1 && `(${record.taksit} Taksit)`}
+                  <div className="text-[9px] font-bold text-muted-foreground uppercase bg-muted/30 px-2 py-0.5 rounded-full mt-1 inline-block">
+                    {record.banka}
                   </div>
                 </div>
               </div>
-              
-              <div className="flex items-center justify-between pt-2 border-t border-border/10">
-                <div className="flex items-center gap-2">
-                  <span className="text-[9px] font-black uppercase py-0.5 px-2 rounded-md bg-primary/10 text-primary border border-primary/20">
-                    {record.sube_adi}
+
+              {/* Middle Info Line */}
+              <div className="flex flex-wrap items-center gap-2 mb-4">
+                <span className="text-[9px] font-black uppercase py-1 px-2.5 rounded-lg bg-primary/10 text-primary border border-primary/20">
+                  {record.sube_adi}
+                </span>
+                {record.taksit > 1 && (
+                  <span className="text-[9px] font-black uppercase py-1 px-2.5 rounded-lg bg-orange-500/10 text-orange-500 border border-orange-500/20">
+                    {record.taksit} Taksit
                   </span>
-                  {record.cekim_subesi !== record.sube_adi && (
-                    <span className="text-[9px] font-black uppercase py-0.5 px-2 rounded-md bg-muted text-muted-foreground border border-border">
-                      {record.cekim_subesi}
-                    </span>
+                )}
+                {record.cekim_subesi !== record.sube_adi && (
+                  <span className="text-[9px] font-black uppercase py-1 px-2.5 rounded-lg bg-muted text-muted-foreground border border-border">
+                    POS: {record.cekim_subesi}
+                  </span>
+                )}
+              </div>
+              
+              {/* Actions Footer */}
+              <div className="flex items-center justify-between pt-4 border-t border-border/20">
+                <div className="flex items-center gap-1.5">
+                   {isPending && (
+                    <div className="flex items-center gap-1.5 text-orange-500 bg-orange-500/10 px-3 py-1.5 rounded-xl border border-orange-500/20">
+                      <Clock className="w-3.5 h-3.5 animate-spin-slow" />
+                      <span className="text-[10px] font-black uppercase tracking-tighter">İşlem Onay Bekliyor</span>
+                    </div>
                   )}
                 </div>
                 
-                <div className="flex items-center gap-1.5">
-                  {isPending ? (
-                    <div className="flex items-center gap-1 text-orange-500 bg-orange-500/10 px-2 py-1 rounded-md border border-orange-500/20">
-                      <Clock className="w-3 h-3 animate-pulse" />
-                      <span className="text-[9px] font-bold uppercase">BEKLEMEDE</span>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-2">
+                <div className="flex items-center gap-3">
+                  {!isPending && (
+                    <>
                       <button 
                         onClick={() => onEdit && onEdit(record, !direct)}
-                        className={`p-2 rounded-xl transition-all ${direct ? 'bg-blue-500/10 text-blue-500 hover:bg-blue-500/20' : 'bg-orange-500/10 text-orange-500 hover:bg-orange-500/20'}`}
+                        className={`w-11 h-11 flex items-center justify-center rounded-2xl transition-all shadow-md active:scale-90 ${direct ? 'bg-blue-500 text-white shadow-blue-500/20' : 'bg-orange-500 text-white shadow-orange-500/20'}`}
                       >
-                        {direct ? <Pencil className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
+                        {direct ? <Pencil className="w-5 h-5" /> : <Lock className="w-5 h-5" />}
                       </button>
                       <button 
                         onClick={() => handleDelete(record)}
                         disabled={deletingId === record.id}
-                        className={`p-2 rounded-xl bg-destructive/10 text-destructive hover:bg-destructive/20 transition-all ${deletingId === record.id ? 'animate-pulse' : ''}`}
+                        className={`w-11 h-11 flex items-center justify-center rounded-2xl bg-destructive text-white shadow-lg shadow-destructive/20 transition-all active:scale-90 ${deletingId === record.id ? 'animate-pulse opacity-50' : ''}`}
                       >
-                        <Trash2 className="w-4 h-4" />
+                        <Trash2 className="w-5 h-5" />
                       </button>
-                    </div>
+                    </>
                   )}
                 </div>
               </div>
-            </div>
+            </motion.div>
           );
         })}
       </div>

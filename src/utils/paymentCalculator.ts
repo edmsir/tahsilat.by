@@ -43,7 +43,7 @@ export function getShiftedDate(date: Date, holidays: string[], active: boolean =
  * Generates a payment schedule for a POS record based on bank settings and holidays.
  */
 export function generatePaymentSchedule(
-  record: { tarih: string; tutar: number; taksit: number },
+  record: { tarih: string; tutar: number; taksit: number; banka: string },
   settings: BankSettings,
   holidays: string[]
 ): PaymentInstallment[] {
@@ -65,6 +65,10 @@ export function generatePaymentSchedule(
   let runningComm = 0;
 
   const transDate = parseISO(record.tarih);
+  if (isNaN(transDate.getTime())) {
+    throw new Error(`${record.banka} için geçersiz çekim tarihi: ${record.tarih}`);
+  }
+
   let currentDate = transDate;
 
   for (let i = 1; i <= taksitSayisi; i++) {
@@ -86,10 +90,22 @@ export function generatePaymentSchedule(
     const instNet = Number((instGross - instComm).toFixed(2));
     
     // Blokaj Günü Hesaplama (Kümülatif Mantık)
-    const offset = blokajlar[i.toString()] ?? blokajlar[i] ?? (i === 1 ? settings.vade_gun : 30);
+    const offset = Number(blokajlar[i.toString()] ?? blokajlar[i] ?? (i === 1 ? (settings.vade_gun || 30) : 30));
+    
+    if (isNaN(offset)) {
+       throw new Error(`${record.banka} için ${i}. taksit vade günü (vade_gun) ayarı hatalı.`);
+    }
+
     currentDate = addDays(currentDate, offset);
+    if (isNaN(currentDate.getTime())) {
+        throw new Error(`${record.banka} için hesaplanan ${i}. taksit tarihi geçersiz.`);
+    }
 
     const { shiftedDate, isShifted } = getShiftedDate(currentDate, holidays, settings.holiday_calculation_active !== false);
+
+    if (isNaN(shiftedDate.getTime())) {
+        throw new Error(`${record.banka} için tatil/haftasonu kaydırması sonrası tarih geçersiz oldu.`);
+    }
 
     schedule.push({
       taksit_no: i,

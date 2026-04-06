@@ -15,6 +15,7 @@ import {
 import { format } from 'date-fns';
 import { tr } from 'date-fns/locale';
 import { motion, AnimatePresence } from 'framer-motion';
+import { logAction } from '../utils/logger';
 
 export default function AdminRequests() {
   const { user } = useAuth();
@@ -114,6 +115,20 @@ export default function AdminRequests() {
       
       if (statusError) throw statusError;
 
+      // AUDIT LOG: Talep Onaylama
+      await logAction({
+        userId: user?.id || '',
+        subeAdi: 'MERKEZ', 
+        action: 'KAYIT_DUZENLEME', // Genel tip veya 'TALEP_ONAY' diyebiliriz
+        details: { 
+          talep_id: talep.id, 
+          islem: 'ONAY', 
+          sube: talep.sube_adi,
+          tip: talep.tip,
+          veri: talep.yeni_veri 
+        }
+      });
+
       alert('Talep başarıyla onaylandı ve işlem gerçekleştirildi.');
       fetchTalepler();
     } catch (error: unknown) {
@@ -135,6 +150,15 @@ export default function AdminRequests() {
         .eq('id', id);
       
       if (error) throw error;
+
+      // AUDIT LOG: Talep Reddetme
+      await logAction({
+        userId: user?.id || '',
+        subeAdi: 'MERKEZ',
+        action: 'KAYIT_SILME',
+        details: { talep_id: id, islem: 'RED', detay: 'Talep yönetici tarafından reddedildi.' }
+      });
+
       alert('Talep reddedildi.');
       fetchTalepler();
     } catch (error: unknown) {
