@@ -20,7 +20,8 @@ export type OdemeTuru =
   | 'YAPI KREDİ POS' 
   | 'HALKBANK POS' 
   | 'QNB FİNANSBANK POS' 
-  | 'DENİZBANK POS';
+  | 'DENİZBANK POS'
+  | 'KUVEYTTÜRK POS';
 
 export interface Kayit {
   id: string;
