@@ -4,6 +4,8 @@ export interface BankSettings {
   banka_adi: string;
   vade_gun: number;
   komisyon_oranlari: Record<string, number>;
+  blokaj_gunleri?: Record<string, number>;
+  holiday_calculation_active?: boolean;
 }
 
 export interface PaymentInstallment {
@@ -19,9 +21,13 @@ export interface PaymentInstallment {
 /**
  * Shifts a date to the next available business day if it's a weekend or a holiday.
  */
-export function getShiftedDate(date: Date, holidays: string[]): { shiftedDate: Date; isShifted: boolean } {
+export function getShiftedDate(date: Date, holidays: string[], active: boolean = true): { shiftedDate: Date; isShifted: boolean } {
   let currentDate = new Date(date);
   let isShifted = false;
+
+  if (!active) {
+    return { shiftedDate: currentDate, isShifted: false };
+  }
 
   const isHoliday = (d: Date) => holidays.includes(format(d, 'yyyy-MM-dd'));
 
@@ -44,6 +50,7 @@ export function generatePaymentSchedule(
   const schedule: PaymentInstallment[] = [];
   const taksitSayisi = record.taksit || 1;
   const oranlar = settings.komisyon_oranlari || {};
+  const blokajlar = settings.blokaj_gunleri || {};
   const komisyonOrani = oranlar[taksitSayisi.toString()] ?? oranlar[taksitSayisi] ?? 0;
 
   // Toplam Tutar ve Toplam Komisyon
@@ -58,7 +65,7 @@ export function generatePaymentSchedule(
   let runningComm = 0;
 
   const transDate = parseISO(record.tarih);
-  let baseDate = addDays(transDate, settings.vade_gun);
+  let currentDate = transDate;
 
   for (let i = 1; i <= taksitSayisi; i++) {
     let instGross: number;
@@ -77,19 +84,22 @@ export function generatePaymentSchedule(
     }
 
     const instNet = Number((instGross - instComm).toFixed(2));
-    const { shiftedDate, isShifted } = getShiftedDate(baseDate, holidays);
+    
+    // Blokaj Günü Hesaplama (Kümülatif Mantık)
+    const offset = blokajlar[i.toString()] ?? blokajlar[i] ?? (i === 1 ? settings.vade_gun : 30);
+    currentDate = addDays(currentDate, offset);
+
+    const { shiftedDate, isShifted } = getShiftedDate(currentDate, holidays, settings.holiday_calculation_active !== false);
 
     schedule.push({
       taksit_no: i,
       planlanan_tarih: format(shiftedDate, 'yyyy-MM-dd'),
-      original_tarih: format(baseDate, 'yyyy-MM-dd'),
+      original_tarih: format(currentDate, 'yyyy-MM-dd'),
       net_tutar: instNet,
       komisyon_tutar: instComm,
       ana_tutar: instGross,
       is_shifted: isShifted
     });
-
-    baseDate = addDays(baseDate, 30);
   }
 
   return schedule;

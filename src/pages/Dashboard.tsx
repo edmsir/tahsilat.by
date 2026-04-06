@@ -23,8 +23,9 @@ export default function Dashboard() {
   const [isEditRequest, setIsEditRequest] = useState(false);
   const [targetAmount, setTargetAmount] = useState(0);
 
-  const role = user?.user_metadata?.role || 'branch';
-  const sube = user?.user_metadata?.sube || 'Bilinmiyor';
+  const role = (user?.user_metadata?.role as 'admin' | 'branch') || 'branch';
+  const sube = (user?.user_metadata?.sube as string) || 'Bilinmiyor';
+  const isAdmin = role === 'admin';
 
   const fetchTarget = useCallback(async () => {
     try {
@@ -89,7 +90,7 @@ export default function Dashboard() {
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight mb-0.5">
-            {role === 'admin' ? 'Merkez Yönetim Paneli' : `${sube} Şube Paneli`}
+            {isAdmin ? 'Merkez Yönetim Paneli' : `${sube} Şube Paneli`}
           </h1>
           <p className="text-xs text-muted-foreground flex items-center gap-2">
             Günlük tahsilat ve satış verilerini takip edin.

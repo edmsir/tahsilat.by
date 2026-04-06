@@ -39,6 +39,8 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
   const metadataSube = user?.user_metadata?.sube as Sube;
   const currentSube: Sube = isEditing ? (initialData.sube_adi as Sube) : ((role === 'admin' || !metadataSube) ? 'MERKEZ' : metadataSube);
 
+  const isAdmin = role === 'admin';
+
   const { register, handleSubmit, reset, watch, setValue, formState: { errors } } = useForm<FormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: {
@@ -68,7 +70,9 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
         'YAPI KREDİ POS', 'HALKBANK POS', 'QNB FİNANSBANK POS', 'DENİZBANK POS'
       ];
       try {
-        const { data } = await supabase.from('banka_ayarlari').select('banka_adi');
+        const { data } = await supabase.from('banka_ayarlari')
+          .select('banka_adi')
+          .neq('is_active', false);
         if (data && data.length > 0) {
           const uniqueBanks = Array.from(new Set(data.map((b: { banka_adi: string }) => b.banka_adi)));
           const combined = Array.from(new Set([...sabitDefaults, ...uniqueBanks]));
@@ -354,7 +358,8 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
             <label className="text-[10px] uppercase font-bold text-muted-foreground ml-1">Çekim Şubesi</label>
             <select
               {...register('cekim_subesi')}
-              className="w-full bg-muted/50 border border-border/50 rounded-lg px-3 py-1.5 text-sm focus:ring-1 focus:ring-primary/50 outline-none transition-all appearance-none"
+              disabled={!isAdmin}
+              className={`w-full bg-muted/50 border border-border/50 rounded-lg px-3 py-1.5 text-sm focus:ring-1 focus:ring-primary/50 outline-none transition-all appearance-none ${!isAdmin ? 'opacity-70 cursor-not-allowed' : ''}`}
             >
               {subeler.map(s => <option key={s} value={s}>{s}</option>)}
             </select>

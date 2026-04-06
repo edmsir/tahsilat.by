@@ -4,11 +4,18 @@ import { motion } from 'framer-motion';
 import { LogIn, KeyRound, Building2, AlertCircle } from 'lucide-react';
 import type { Sube } from '../types';
 
-const subeler: Sube[] = ['MERKEZ', 'ANKARA', 'BURSA', 'BAYRAMPAŞA', 'MODOKO', 'İZMİR', 'MALZEME'];
+const subeler: string[] = ['YÖNETİCİ', 'MERKEZ', 'ANKARA', 'BURSA', 'BAYRAMPAŞA', 'MODOKO', 'İZMİR', 'MALZEME'];
 
 export default function Login() {
-  const [selectedSube, setSelectedSube] = useState<Sube | ''>('');
-  const [accessCode, setAccessCode] = useState('');
+  const [selectedSube, setSelectedSube] = useState<Sube | ''>(() => {
+    return (localStorage.getItem('rememberedSube') as Sube) || '';
+  });
+  const [rememberMe, setRememberMe] = useState(() => {
+    return localStorage.getItem('rememberMe') === 'true';
+  });
+  const [accessCode, setAccessCode] = useState(() => {
+    return rememberMe ? localStorage.getItem('rememberedCode') || '' : '';
+  });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -23,8 +30,9 @@ export default function Login() {
     setError(null);
 
     // E-posta adresini şube adıyla eşliyoruz (Türkçe karakter sorununu aşmak için sabit harita)
-    const emailMap: Record<Sube, string> = {
-      'MERKEZ': 'admin@tahsilat.by', // Merkez şubesi direkt admin yetkilerine sahip
+    const emailMap: Record<string, string> = {
+      'YÖNETİCİ': 'admin@tahsilat.by',
+      'MERKEZ': 'merkez@tahsilat.by',
       'ANKARA': 'ankara@tahsilat.by',
       'BURSA': 'bursa@tahsilat.by',
       'BAYRAMPAŞA': 'bayrampasa@tahsilat.by',
@@ -34,6 +42,16 @@ export default function Login() {
     };
     
     const email = emailMap[selectedSube as Sube];
+
+    if (rememberMe) {
+      localStorage.setItem('rememberedSube', selectedSube);
+      localStorage.setItem('rememberedCode', accessCode);
+      localStorage.setItem('rememberMe', 'true');
+    } else {
+      localStorage.removeItem('rememberedSube');
+      localStorage.removeItem('rememberedCode');
+      localStorage.setItem('rememberMe', 'false');
+    }
 
     const { error } = await supabase.auth.signInWithPassword({
       email,
@@ -106,6 +124,21 @@ export default function Login() {
               {error}
             </motion.div>
           )}
+
+          <div className="flex items-center justify-between ml-1">
+            <label className="flex items-center gap-2 cursor-pointer group">
+              <div className="relative flex items-center">
+                <input
+                  type="checkbox"
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                  className="peer h-4 w-4 appearance-none rounded border border-white/20 bg-white/5 checked:bg-primary checked:border-primary transition-all duration-200"
+                />
+                <svg className="absolute w-3 h-3 text-white opacity-0 peer-checked:opacity-100 top-0.5 left-0.5 pointer-events-none transition-opacity duration-200" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+              </div>
+              <span className="text-xs font-medium text-gray-400 group-hover:text-gray-300 transition-colors">Beni Hatırla</span>
+            </label>
+          </div>
 
           <button
             type="submit"

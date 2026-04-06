@@ -46,7 +46,7 @@ export default function CiroChart({ records }: CiroChartProps) {
               axisLine={false}
               tickLine={false}
               tick={{ fill: '#94a3b8', fontSize: 12 }}
-              tickFormatter={(value) => `${value / 1000}k`}
+              tickFormatter={(value) => `₺${((value || 0) / 1000).toFixed(0)}k`}
             />
             <Tooltip
               cursor={{ fill: 'rgba(255,255,255,0.05)' }}

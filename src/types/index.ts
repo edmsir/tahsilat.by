@@ -1,4 +1,5 @@
 export type Sube = 
+  | 'YÖNETİCİ'
   | 'MERKEZ' 
   | 'ANKARA' 
   | 'BURSA' 
@@ -73,6 +74,9 @@ export interface BankSettings {
   bitis_tarihi: string | null;
   vade_gun: number;
   komisyon_oranlari: Record<string, number>;
+  blokaj_gunleri?: Record<string, number>;
+  is_active?: boolean;
+  holiday_calculation_active?: boolean;
   created_at?: string;
   updated_at?: string;
 }

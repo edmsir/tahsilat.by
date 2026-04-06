@@ -255,6 +255,9 @@ export default function AdminPayments() {
         .update({
           vade_gun: bank.vade_gun,
           komisyon_oranlari: bank.komisyon_oranlari,
+          blokaj_gunleri: bank.blokaj_gunleri || {},
+          is_active: bank.is_active ?? true,
+          holiday_calculation_active: bank.holiday_calculation_active ?? true,
           baslangic_tarihi: bank.baslangic_tarihi,
           bitis_tarihi: bank.bitis_tarihi || null,
           updated_at: new Date().toISOString()
@@ -379,7 +382,10 @@ export default function AdminPayments() {
             baslangic_tarihi: startDate,
             bitis_tarihi: null,
             vade_gun: 30,
-            komisyon_oranlari: { '1': 0, '2': 0, '3': 0, '4': 0, '5': 0, '6': 0, '7': 0, '8': 0, '9': 0, '10': 0, '11': 0, '12': 0 }
+            komisyon_oranlari: { '1': 0, '2': 0, '3': 0, '4': 0, '5': 0, '6': 0, '7': 0, '8': 0, '9': 0, '10': 0, '11': 0, '12': 0 },
+            blokaj_gunleri: { '1': 30 },
+            is_active: true,
+            holiday_calculation_active: true
         };
 
         const { error } = await supabase
@@ -1084,54 +1090,54 @@ export default function AdminPayments() {
                         </div>
                      </div>
                   </div>
-                  <div className="h-[350px] w-full">
+                  <div className="h-[350px] w-full min-h-[350px]">
                      <ResponsiveContainer width="100%" height="100%" minHeight={350}>
-                        <LineChart data={chartData} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
-                           <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(var(--foreground), 0.05)" />
-                           <XAxis 
-                              dataKey="month" 
-                              axisLine={false}
-                              tickLine={false}
-                              tick={{ fontSize: 10, fontWeight: 900, fill: 'currentColor', opacity: 0.5 }}
-                              dy={15}
-                           />
-                           <YAxis 
-                              axisLine={false}
-                              tickLine={false}
-                              tick={{ fontSize: 10, fontWeight: 900, fill: 'currentColor', opacity: 0.5 }}
-                              tickFormatter={(value) => `₺${(value / 1000).toFixed(0)}k`}
-                           />
-                           <Tooltip 
-                              contentStyle={{ 
-                                 backgroundColor: 'var(--card)', 
-                                 borderRadius: '24px', 
-                                 border: '1px solid var(--border)',
-                                 boxShadow: '0 10px 25px -5px rgba(0,0,0,0.1)',
-                                 fontSize: '11px',
-                                 fontWeight: 900
-                              }}
-                              formatter={(value: string | number | readonly (string | number)[] | undefined) => value !== undefined ? [`₺${Number(value).toLocaleString('tr-TR')}`, ''] : ['', '']}
-                           />
-                           <Line 
-                              type="monotone" 
-                              dataKey="net" 
-                              stroke="var(--primary)" 
-                              strokeWidth={4} 
-                              dot={{ r: 6, fill: 'var(--primary)', strokeWidth: 3, stroke: 'var(--card)' }}
-                              activeDot={{ r: 8, strokeWidth: 0 }}
-                              animationDuration={1500}
-                           />
-                           <Line 
-                              type="monotone" 
-                              dataKey="gross" 
-                              stroke="currentColor" 
-                              strokeWidth={2} 
-                              strokeDasharray="5 5" 
-                              opacity={0.15}
-                              dot={false}
-                           />
-                        </LineChart>
-                     </ResponsiveContainer>
+                         <LineChart data={chartData} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(var(--foreground), 0.05)" />
+                            <XAxis 
+                               dataKey="month" 
+                               axisLine={false}
+                               tickLine={false}
+                               tick={{ fontSize: 10, fontWeight: 900, fill: 'currentColor', opacity: 0.5 }}
+                               dy={15}
+                            />
+                            <YAxis 
+                               axisLine={false}
+                               tickLine={false}
+                               tick={{ fontSize: 10, fontWeight: 900, fill: 'currentColor', opacity: 0.5 }}
+                               tickFormatter={(value) => `₺${((value || 0) / 1000).toFixed(0)}k`}
+                            />
+                            <Tooltip 
+                               contentStyle={{ 
+                                  backgroundColor: 'var(--card)', 
+                                  borderRadius: '24px', 
+                                  border: '1px solid var(--border)',
+                                  boxShadow: '0 10px 25px -5px rgba(0,0,0,0.1)',
+                                  fontSize: '11px',
+                                  fontWeight: 900
+                               }}
+                               formatter={(value: string | number | readonly (string | number)[] | undefined) => value !== undefined ? [`₺${Number(value || 0).toLocaleString('tr-TR')}`, ''] : ['', '']}
+                            />
+                            <Line 
+                               type="monotone" 
+                               dataKey="net" 
+                               stroke="var(--primary)" 
+                               strokeWidth={4} 
+                               dot={{ r: 6, fill: 'var(--primary)', strokeWidth: 3, stroke: 'var(--card)' }}
+                               activeDot={{ r: 8, strokeWidth: 0 }}
+                               animationDuration={1500}
+                            />
+                            <Line 
+                               type="monotone" 
+                               dataKey="gross" 
+                               stroke="currentColor" 
+                               strokeWidth={2} 
+                               strokeDasharray="5 5" 
+                               opacity={0.15}
+                               dot={false}
+                            />
+                         </LineChart>
+                      </ResponsiveContainer>
                   </div>
                </div>
 
@@ -1174,7 +1180,7 @@ export default function AdminPayments() {
                                        </td>
                                        <td className="py-4 text-center">
                                           <div className={`inline-flex items-center px-3 py-1 rounded-full text-[10px] font-black ${effectiveRate > 2 ? 'bg-orange-500/10 text-orange-500' : 'bg-emerald-500/10 text-emerald-500'}`}>
-                                             %{effectiveRate.toFixed(2)}
+                                             %{isNaN(effectiveRate) ? '0.00' : effectiveRate.toFixed(2)}
                                           </div>
                                        </td>
                                     </tr>
@@ -1259,6 +1265,30 @@ export default function AdminPayments() {
                         </div>
                       </div>
                       <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-2 mr-4">
+                           <button 
+                             onClick={(e) => {
+                               e.stopPropagation();
+                               const agreement = activeAgreement!;
+                               handleUpdateBank({...agreement, is_active: !agreement.is_active});
+                             }}
+                             className={`px-3 py-1 rounded-full text-[9px] font-black uppercase transition-all ${activeAgreement?.is_active !== false ? 'bg-emerald-500 text-white' : 'bg-muted text-muted-foreground'}`}
+                           >
+                             {activeAgreement?.is_active !== false ? 'AKTİF' : 'PASİF'}
+                           </button>
+                           <button 
+                             onClick={(e) => {
+                               e.stopPropagation();
+                               const agreement = activeAgreement!;
+                               handleUpdateBank({...agreement, holiday_calculation_active: !agreement.holiday_calculation_active});
+                             }}
+                             title="Tatil Günü Kaydırma"
+                             className={`px-3 py-1 rounded-full text-[9px] font-black uppercase transition-all flex items-center gap-1 ${activeAgreement?.holiday_calculation_active !== false ? 'bg-blue-500 text-white' : 'bg-muted text-muted-foreground'}`}
+                           >
+                             <Calendar size={10} />
+                             {activeAgreement?.holiday_calculation_active !== false ? 'KAYDIRMA AÇIK' : 'KAYDIRMA KAPALI'}
+                           </button>
+                        </div>
                         {activeAgreement && (
                           <span className="px-3 py-1 bg-primary/10 text-primary rounded-full text-[9px] font-black uppercase">
                             {activeAgreement.baslangic_tarihi} →
@@ -1388,39 +1418,77 @@ export default function AdminPayments() {
                                 </div>
 
                                 {/* Commission rates grid */}
-                                <div className="grid grid-cols-5 sm:grid-cols-10 gap-2">
-                                  {Array.from(new Set(['1','2','3','4','5','6','7','8','9','10','11','12',...Object.keys(agreement.komisyon_oranlari)]))
-                                    .sort((a,b) => parseInt(a)-parseInt(b))
-                                    .map(count => (
-                                      <div key={count} className="bg-background/60 p-2 rounded-xl border border-border/40">
-                                        <span className="text-[8px] font-black text-muted-foreground uppercase block">{count}T</span>
-                                        <div className="flex items-center gap-0.5">
-                                          <span className="text-[9px] font-bold text-primary">%</span>
-                                          <input
-                                            type="number" step="0.01"
-                                            value={agreement.komisyon_oranlari[count] ?? 0}
-                                            onChange={(e) => {
-                                              const newRates = {...agreement.komisyon_oranlari, [count]: parseFloat(e.target.value)};
-                                              setBanks(prev => prev.map(b => b.id === agreement.id ? {...b, komisyon_oranlari: newRates} : b));
-                                            }}
-                                            className="bg-transparent border-none p-0 text-[10px] font-black text-foreground w-full focus:ring-0 outline-none"
-                                          />
-                                        </div>
-                                      </div>
-                                    ))}
-                                  <button
-                                    onClick={() => {
-                                      const count = window.prompt('Eklemek istediğiniz taksit sayısı:');
-                                      if (count && !isNaN(parseInt(count))) {
-                                        const newRates = {...agreement.komisyon_oranlari, [count]: 0};
-                                        setBanks(prev => prev.map(b => b.id === agreement.id ? {...b, komisyon_oranlari: newRates} : b));
-                                      }
-                                    }}
-                                    className="border-2 border-dashed border-border/40 rounded-xl flex items-center justify-center text-muted-foreground hover:text-primary hover:border-primary transition-all min-h-[48px]"
-                                  >
-                                    <Plus size={14} />
-                                  </button>
-                                </div>
+                                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                                   {Array.from(new Set(['1','2','3','4','5','6','7','8','9','10','11','12',...Object.keys(agreement.komisyon_oranlari)]))
+                                     .sort((a,b) => parseInt(a)-parseInt(b))
+                                     .filter(count => agreement.komisyon_oranlari[count] !== undefined || ['1','2','3','4','5','6'].includes(count))
+                                     .map(count => (
+                                       <div key={count} className="bg-background/60 p-3 rounded-2xl border border-border/40 relative group/inst">
+                                         <button 
+                                           onClick={() => {
+                                             if (window.confirm(`${count} taksitli çekim ayarını silmek istediğinize emin misiniz?`)) {
+                                               const newRates = {...agreement.komisyon_oranlari};
+                                               delete newRates[count];
+                                               const newBlokaj = {...(agreement.blokaj_gunleri || {})};
+                                               delete newBlokaj[count];
+                                               setBanks(prev => prev.map(b => b.id === agreement.id ? {...b, komisyon_oranlari: newRates, blokaj_gunleri: newBlokaj} : b));
+                                             }
+                                           }}
+                                           className="absolute -top-2 -right-2 w-5 h-5 bg-destructive text-white rounded-full flex items-center justify-center opacity-0 group-hover/inst:opacity-100 transition-opacity z-10"
+                                         >
+                                           <X size={10} />
+                                         </button>
+                                         <div className="flex flex-col gap-2">
+                                           <div className="flex justify-between items-center">
+                                              <span className="text-[10px] font-black text-muted-foreground uppercase">{count} TAKSİT</span>
+                                           </div>
+                                           <div className="space-y-2">
+                                              <div className="flex items-center gap-1 bg-muted/30 px-2 py-1.5 rounded-lg">
+                                                <span className="text-[9px] font-bold text-primary">%</span>
+                                                <input
+                                                  type="number" step="0.01"
+                                                  value={agreement.komisyon_oranlari[count] ?? 0}
+                                                  onChange={(e) => {
+                                                    const val = parseFloat(e.target.value);
+                                                    const newRates = {...agreement.komisyon_oranlari, [count]: isNaN(val) ? 0 : val};
+                                                    setBanks(prev => prev.map(b => b.id === agreement.id ? {...b, komisyon_oranlari: newRates} : b));
+                                                  }}
+                                                  className="bg-transparent border-none p-0 text-xs font-black text-foreground w-full focus:ring-0 outline-none"
+                                                />
+                                              </div>
+                                              <div className="flex items-center gap-1 bg-primary/5 px-2 py-1.5 rounded-lg border border-primary/10">
+                                                <Clock size={10} className="text-primary" />
+                                                <input
+                                                  type="number"
+                                                  placeholder="Gün"
+                                                  value={agreement.blokaj_gunleri?.[count] ?? (count === '1' ? agreement.vade_gun : 30)}
+                                                  onChange={(e) => {
+                                                    const val = parseInt(e.target.value);
+                                                    const newBlokaj = {...(agreement.blokaj_gunleri || {}), [count]: isNaN(val) ? 0 : val};
+                                                    setBanks(prev => prev.map(b => b.id === agreement.id ? {...b, blokaj_gunleri: newBlokaj} : b));
+                                                  }}
+                                                  className="bg-transparent border-none p-0 text-[10px] font-bold text-primary w-full focus:ring-0 outline-none"
+                                                />
+                                                <span className="text-[8px] font-black text-primary/50">GÜN</span>
+                                              </div>
+                                           </div>
+                                         </div>
+                                       </div>
+                                     ))}
+                                   <button
+                                     onClick={() => {
+                                       const count = window.prompt('Eklemek istediğiniz taksit sayısı:');
+                                       if (count && !isNaN(parseInt(count))) {
+                                         const newRates = {...agreement.komisyon_oranlari, [count]: 0};
+                                         setBanks(prev => prev.map(b => b.id === agreement.id ? {...b, komisyon_oranlari: newRates} : b));
+                                       }
+                                     }}
+                                     className="border-2 border-dashed border-border/40 rounded-2xl flex flex-col items-center justify-center text-muted-foreground hover:text-primary hover:border-primary transition-all min-h-[100px] gap-2"
+                                   >
+                                     <Plus size={20} />
+                                     <span className="text-[9px] font-black uppercase">Taksit Ekle</span>
+                                   </button>
+                                 </div>
                               </div>
                             );
                           })}
