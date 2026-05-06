@@ -38,8 +38,8 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
   const [isBulkModalOpen, setIsBulkModalOpen] = useState(false);
   
   const isEditing = !!initialData;
-  const role = user?.user_metadata?.role as string;
-  const metadataSube = user?.user_metadata?.sube as Sube;
+  const role = user?.app_metadata?.role as string;
+  const metadataSube = user?.app_metadata?.sube as Sube;
   const currentSube: Sube = isEditing ? (initialData.sube_adi as Sube) : ((role === 'admin' || !metadataSube) ? 'MERKEZ' : metadataSube);
 
   const isAdmin = role === 'admin';
@@ -198,11 +198,34 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
             details: { id: initialData.id, type: 'REQUEST', ...data }
           });
         } else {
-          const { error: updateError } = await supabase
+          // Sadece güncellenebilir alanları gönderelim (id, user_id, created_at vb. hariç)
+          const updateData = {
+            tarih: data.tarih,
+            musteri_adi: data.musteri_adi,
+            banka: data.banka,
+            cekim_subesi: data.cekim_subesi,
+            tutar: data.tutar,
+            taksit: data.taksit,
+            notlar: data.notlar
+          };
+
+          const { data: updatedData, error: updateError } = await supabase
             .from('kayitlar')
-            .update(data)
-            .eq('id', initialData.id);
-          if (updateError) throw updateError;
+            .update(updateData)
+            .eq('id', initialData.id)
+            .select();
+          
+          if (updateError) {
+            console.error('Güncelleme Hatası Detay:', updateError);
+            throw updateError;
+          }
+
+          if (!updatedData || updatedData.length === 0) {
+            console.warn('Güncelleme başarılı dendi ama 0 satır etkilendi. RLS politikasını kontrol edin:', initialData.id);
+            throw new Error('Kayıt güncellenemedi. Yetkiniz olmayabilir veya kayıt silinmiş olabilir.');
+          }
+
+          console.log('Başarıyla güncellenen veri:', updatedData[0]);
 
           // AUDIT LOG: Kayıt Düzenleme (Direkt)
           await logAction({

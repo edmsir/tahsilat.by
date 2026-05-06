@@ -46,9 +46,9 @@ function AppContent() {
       <Route path="/login" element={!user ? <Login /> : <Navigate to="/" />} />
       <Route path="/" element={user ? <Dashboard /> : <Navigate to="/login" />} />
       <Route path="/reports" element={user ? <Reports /> : <Navigate to="/login" />} />
-      <Route path="/requests" element={(user && user.user_metadata?.role === 'admin') ? <AdminRequests /> : <Navigate to="/" />} />
-      <Route path="/settings" element={(user && user.user_metadata?.role === 'admin') ? <AdminSettings /> : <Navigate to="/" />} />
-      <Route path="/payments" element={(user && user.user_metadata?.role === 'admin') ? <AdminPayments /> : <Navigate to="/" />} />
+      <Route path="/requests" element={(user && user.app_metadata?.role === 'admin') ? <AdminRequests /> : <Navigate to="/" />} />
+      <Route path="/settings" element={(user && user.app_metadata?.role === 'admin') ? <AdminSettings /> : <Navigate to="/" />} />
+      <Route path="/payments" element={(user && user.app_metadata?.role === 'admin') ? <AdminPayments /> : <Navigate to="/" />} />
       <Route path="*" element={<Navigate to="/" />} />
     </Routes>
   );

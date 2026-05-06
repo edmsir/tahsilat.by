@@ -628,7 +628,7 @@ export default function AdminPayments() {
     }
   };
 
-  if (user?.user_metadata?.role !== 'admin') {
+  if (user?.app_metadata?.role !== 'admin') {
      return <MainLayout><div className="p-20 text-center font-bold">Yetkisiz Erişim</div></MainLayout>;
   }
 

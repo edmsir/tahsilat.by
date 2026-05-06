@@ -12,8 +12,8 @@ export default function Navbar() {
   const [pendingCount, setPendingCount] = useState(0);
   const location = useLocation();
   
-  const role = user?.user_metadata?.role || 'branch';
-  const sube = user?.user_metadata?.sube || 'Bilinmiyor';
+  const role = user?.app_metadata?.role || 'branch';
+  const sube = user?.app_metadata?.sube || 'Bilinmiyor';
 
   useEffect(() => {
     if (role !== 'admin') return;

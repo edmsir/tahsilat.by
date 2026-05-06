@@ -61,7 +61,7 @@ export default function AdminUsers() {
     setShowCodes(prev => ({ ...prev, [id]: !prev[id] }));
   };
 
-  if (user?.user_metadata?.role !== 'admin') {
+  if (user?.app_metadata?.role !== 'admin') {
     return (
       <MainLayout>
         <div className="flex items-center justify-center h-[60vh]">

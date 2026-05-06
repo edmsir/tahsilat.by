@@ -26,8 +26,8 @@ export default function Dashboard() {
   const [isEditRequest, setIsEditRequest] = useState(false);
   const [targetAmount, setTargetAmount] = useState(0);
 
-  const role = (user?.user_metadata?.role as 'admin' | 'branch') || 'branch';
-  const sube = (user?.user_metadata?.sube as string) || 'Bilinmiyor';
+  const role = (user?.app_metadata?.role as 'admin' | 'branch') || 'branch';
+  const sube = (user?.app_metadata?.sube as string) || 'Bilinmiyor';
   const isAdmin = role === 'admin';
 
   const PAGE_SIZE = 20;
@@ -97,15 +97,22 @@ export default function Dashboard() {
 
       if (error) throw error;
       
-      if (isRefreshing) {
+      if (isRefreshing || currentPage === 0) {
         setRecords(data || []);
       } else {
         setRecords(prev => {
           const newRecords = data || [];
-          // Mükerrer kayıtları engelle (De-duplication)
-          const existingIds = new Set(prev.map(r => r.id));
-          const uniqueNewRecords = newRecords.filter(r => !existingIds.has(r.id));
-          return [...prev, ...uniqueNewRecords];
+          // Mevcut kayıtları güncelle, yenileri ekle
+          const updatedRecords = [...prev];
+          newRecords.forEach(newR => {
+            const index = updatedRecords.findIndex(r => r.id === newR.id);
+            if (index !== -1) {
+              updatedRecords[index] = newR;
+            } else {
+              updatedRecords.push(newR);
+            }
+          });
+          return updatedRecords;
         });
       }
       
@@ -135,7 +142,7 @@ export default function Dashboard() {
         isOpen={isEditModalOpen} 
         onClose={() => setIsEditModalOpen(false)} 
         record={editingRecord} 
-        onSuccess={fetchRecords} 
+        onSuccess={() => fetchRecords(true)} 
         isRequest={isEditRequest}
       />
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-4">

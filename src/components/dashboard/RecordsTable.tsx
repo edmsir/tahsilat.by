@@ -30,10 +30,11 @@ export default function RecordsTable({ records, loading, onRefresh, onEdit }: Re
   const [sortKey, setSortKey] = useState<SortKey>('tarih');
   const [sortOrder, setSortOrder] = useState<SortOrder>('desc');
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [pendingRequests, setPendingRequests] = useState<string[]>([]);
 
-  const role = user?.user_metadata?.role as string;
-  const sube = user?.user_metadata?.sube as string;
+  const role = user?.app_metadata?.role as string;
+  const sube = user?.app_metadata?.sube as string;
 
   const fetchPendingRequests = useCallback(async () => {
     if (!records.length) return;
@@ -55,19 +56,41 @@ export default function RecordsTable({ records, loading, onRefresh, onEdit }: Re
   }, [fetchPendingRequests]);
 
   const canEditDirectly = () => {
-    return role === 'admin';
+    // Daha güvenli rol kontrolü
+    const currentRole = user?.app_metadata?.role || (user as any)?.role;
+    return currentRole === 'admin' || role === 'admin';
   };
 
-  const handleDelete = async (record: Kayit) => {
+  const handleDelete = async (record: Kayit, isConfirmed = false) => {
     const direct = canEditDirectly();
     
+    if (direct && !isConfirmed) {
+      setConfirmDeleteId(record.id);
+      return;
+    }
+    
     if (direct) {
-      if (!window.confirm(`${record.musteri_adi} isimli kaydı silmek istediğinize emin misiniz?`)) return;
+      setConfirmDeleteId(null);
       setDeletingId(record.id);
       try {
-        const { error } = await supabase.from('kayitlar').delete().eq('id', record.id);
-        if (error) throw error;
-        if (onRefresh) onRefresh();
+        const { data, error } = await supabase
+          .from('kayitlar')
+          .delete()
+          .eq('id', record.id)
+          .select();
+
+        if (error) {
+          console.error('Silme Hatası Detay:', error);
+          throw error;
+        }
+
+        if (!data || data.length === 0) {
+          console.warn('Silme işlemi başarılı dendi ama veritabanında bu ID ile bir kayıt bulunamadı veya silinemedi:', record.id);
+          alert('Uyarı: Kayıt veritabanında bulunamadı veya silme yetkiniz yok.');
+        } else {
+          console.log('Başarıyla silinen kayıt:', data[0]);
+          if (onRefresh) onRefresh();
+        }
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : 'Bilinmeyen bir hata oluştu';
         alert('Silme işlemi başarısız: ' + message);
@@ -225,22 +248,48 @@ export default function RecordsTable({ records, loading, onRefresh, onEdit }: Re
                 </div>
                 
                 <div className="flex items-center gap-3">
-                  {!isPending && (
-                    <>
-                      <button 
-                        onClick={() => onEdit && onEdit(record, !direct)}
-                        className={`w-11 h-11 flex items-center justify-center rounded-2xl transition-all shadow-md active:scale-90 ${direct ? 'bg-blue-500 text-white shadow-blue-500/20' : 'bg-orange-500 text-white shadow-orange-500/20'}`}
-                      >
-                        {direct ? <Pencil className="w-5 h-5" /> : <Lock className="w-5 h-5" />}
-                      </button>
-                      <button 
-                        onClick={() => handleDelete(record)}
-                        disabled={deletingId === record.id}
-                        className={`w-11 h-11 flex items-center justify-center rounded-2xl bg-destructive text-white shadow-lg shadow-destructive/20 transition-all active:scale-90 ${deletingId === record.id ? 'animate-pulse opacity-50' : ''}`}
-                      >
-                        <Trash2 className="w-5 h-5" />
-                      </button>
-                    </>
+                  {isPending && !direct && (
+                    <div className="flex items-center gap-1.5 text-orange-500 bg-orange-500/10 px-3 py-1.5 rounded-xl border border-orange-500/20">
+                      <Clock className="w-3.5 h-3.5 animate-spin-slow" />
+                      <span className="text-[10px] font-black uppercase tracking-tighter">Beklemede</span>
+                    </div>
+                  )}
+                  
+                  {(direct || !isPending) && (
+                    <div className="flex items-center gap-3 relative z-[60]">
+                      {confirmDeleteId === record.id ? (
+                        <div className="flex items-center gap-2 bg-destructive/10 p-1 rounded-2xl border border-destructive/20 animate-in fade-in zoom-in duration-200">
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); handleDelete(record, true); }}
+                            className="bg-destructive text-white px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest shadow-lg shadow-destructive/20 active:scale-95 transition-all"
+                          >
+                            SİL
+                          </button>
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(null); }}
+                            className="bg-muted text-foreground px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-all"
+                          >
+                            İPTAL
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); onEdit && onEdit(record, !direct); }}
+                            className={`w-11 h-11 flex items-center justify-center rounded-2xl transition-all shadow-md active:scale-90 pointer-events-auto ${direct ? 'bg-blue-500 text-white shadow-blue-500/20' : 'bg-orange-500 text-white shadow-orange-500/20'}`}
+                          >
+                            {direct ? <Pencil className="w-5 h-5" /> : <Lock className="w-5 h-5" />}
+                          </button>
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); handleDelete(record); }}
+                            disabled={deletingId === record.id}
+                            className={`w-11 h-11 flex items-center justify-center rounded-2xl bg-destructive text-white shadow-lg shadow-destructive/20 transition-all active:scale-90 pointer-events-auto ${deletingId === record.id ? 'animate-pulse opacity-50' : ''}`}
+                          >
+                            <Trash2 className="w-5 h-5" />
+                          </button>
+                        </>
+                      )}
+                    </div>
                   )}
                 </div>
               </div>
@@ -302,7 +351,7 @@ export default function RecordsTable({ records, loading, onRefresh, onEdit }: Re
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex items-center justify-center gap-2">
-                        {isPending ? (
+                        {isPending && !direct && (
                           <div 
                             className="flex items-center gap-1.5 text-orange-500 bg-orange-500/10 px-2 py-1 rounded-md border border-orange-500/20 cursor-help"
                             title="Bu kayıt için bekleyen bir onay talebi bulunmaktadır."
@@ -310,24 +359,45 @@ export default function RecordsTable({ records, loading, onRefresh, onEdit }: Re
                             <Clock className="w-3.5 h-3.5 animate-pulse" />
                             <span className="text-[10px] font-bold tracking-tight">BEKLEMEDE</span>
                           </div>
-                        ) : (
-                          <>
-                            <button 
-                              onClick={() => onEdit && onEdit(record, !direct)}
-                              className={`p-1.5 rounded-lg transition-colors ${direct ? 'text-blue-500 hover:bg-blue-500/10' : 'text-orange-500 hover:bg-orange-500/10'}`}
-                              title={direct ? 'Düzenle' : 'Düzenleme Talebi Gönder'}
-                            >
-                              {direct ? <Pencil className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
-                            </button>
-                            <button 
-                              onClick={() => handleDelete(record)}
-                              disabled={deletingId === record.id}
-                              className={`p-1.5 rounded-lg text-destructive hover:bg-destructive/10 transition-colors ${deletingId === record.id ? 'animate-pulse' : ''}`}
-                              title={direct ? 'Sil' : 'Silme Talebi Gönder'}
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </>
+                        )}
+                        
+                        {(direct || !isPending) && (
+                          <div className="flex items-center justify-center gap-2 relative z-[60]">
+                            {confirmDeleteId === record.id ? (
+                              <div className="flex items-center gap-1 bg-destructive/10 p-0.5 rounded-lg border border-destructive/20 animate-in fade-in zoom-in duration-200">
+                                <button 
+                                  onClick={(e) => { e.stopPropagation(); handleDelete(record, true); }}
+                                  className="bg-destructive text-white px-2 py-1 rounded-md text-[9px] font-black uppercase active:scale-95 transition-all"
+                                >
+                                  EVET
+                                </button>
+                                <button 
+                                  onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(null); }}
+                                  className="bg-muted text-foreground px-2 py-1 rounded-md text-[9px] font-black uppercase active:scale-95 transition-all"
+                                >
+                                  HAYIR
+                                </button>
+                              </div>
+                            ) : (
+                              <>
+                                <button 
+                                  onClick={(e) => { e.stopPropagation(); onEdit && onEdit(record, !direct); }}
+                                  className={`p-1.5 rounded-lg transition-colors pointer-events-auto ${direct ? 'text-blue-500 hover:bg-blue-500/10' : 'text-orange-500 hover:bg-orange-500/10'}`}
+                                  title={direct ? 'Düzenle' : 'Düzenleme Talebi Gönder'}
+                                >
+                                  {direct ? <Pencil className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
+                                </button>
+                                <button 
+                                  onClick={(e) => { e.stopPropagation(); handleDelete(record); }}
+                                  disabled={deletingId === record.id}
+                                  className={`p-1.5 rounded-lg text-destructive hover:bg-destructive/10 transition-colors pointer-events-auto ${deletingId === record.id ? 'animate-pulse' : ''}`}
+                                  title={direct ? 'Sil' : 'Silme Talebi Gönder'}
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </>
+                            )}
+                          </div>
                         )}
                       </div>
                     </td>

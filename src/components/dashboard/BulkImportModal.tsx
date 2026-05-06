@@ -1,11 +1,12 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../hooks/useAuth';
-import type { Sube } from '../../types';
-import { Loader2, X, CheckCircle2, AlertCircle, FileSpreadsheet, ClipboardPaste } from 'lucide-react';
+import type { Sube, BankSettings } from '../../types';
+import { Loader2, X, CheckCircle2, AlertCircle, FileSpreadsheet, ClipboardPaste, Info } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { generatePaymentSchedule } from '../../utils/paymentCalculator';
 import { logAction } from '../../utils/logger';
+import { isWithinInterval, parseISO } from 'date-fns';
 
 interface BulkImportModalProps {
   isOpen: boolean;
@@ -17,9 +18,23 @@ interface BulkImportModalProps {
 interface GroupedData {
   id: string; 
   banka: string;
-  taksit: number;
+  taksit: number | null; 
   tutar: number;
   count: number;
+  tarih: string;
+  sube: Sube;
+  originalLineIndices: number[]; 
+  originalRawData: string[];
+  isInstallmentValid?: boolean;
+  unsupportedMessage?: string;
+}
+
+interface ColumnMapping {
+  bankCol: number;
+  descCol: number;
+  amountCol: number;
+  dateCol: number;
+  subeCol: number;
 }
 
 export default function BulkImportModal({ isOpen, onClose, onSuccess, currentSube }: BulkImportModalProps) {
@@ -35,11 +50,50 @@ export default function BulkImportModal({ isOpen, onClose, onSuccess, currentSub
   // New States for Date and Sube selection
   const [importDate, setImportDate] = useState(new Date().toISOString().split('T')[0]);
   const [importSube, setImportSube] = useState<Sube>(currentSube);
+  
+  // Mapping States
+  const [detectedColumns, setDetectedColumns] = useState<ColumnMapping | null>(null);
+  const [rawLines, setRawLines] = useState<string[][]>([]);
+  // Wizard Step State
+  const [step, setStep] = useState<'paste' | 'map' | 'review'>('paste');
+  const [allBankSettings, setAllBankSettings] = useState<BankSettings[]>([]);
+
+  // Fetch Bank Settings for Validation
+  useEffect(() => {
+    const fetchBankSettings = async () => {
+      try {
+        const { data, error } = await supabase.from('banka_ayarlari').select('*');
+        if (error) throw error;
+        setAllBankSettings(data || []);
+      } catch (err) {
+        console.error('Banka ayarları yüklenemedi:', err);
+      }
+    };
+
+    if (isOpen) {
+      fetchBankSettings();
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
-  const isAdmin = user?.user_metadata?.role === 'admin';
+  const isAdmin = user?.app_metadata?.role === 'admin';
   const subeler: Sube[] = ['MERKEZ', 'ANKARA', 'BURSA', 'BAYRAMPAŞA', 'MODOKO', 'İZMİR', 'MALZEME'];
+
+  const updateGroupTaksit = (id: string, val: number) => {
+    setGroupedRecords(prev => prev.map(g => g.id === id ? { ...g, taksit: val } : g));
+  };
+
+  const currentMapping = detectedColumns || { bankCol: -1, descCol: -1, amountCol: -1, dateCol: -1, subeCol: -1 };
+
+  const handleApplyMapping = () => {
+    if (currentMapping.bankCol === -1 || currentMapping.descCol === -1 || currentMapping.amountCol === -1) {
+      setError('Lütfen en az Banka, Açıklama ve Tutar sütunlarını eşleştirin.');
+      return;
+    }
+    setStep('review');
+    processWithMapping(rawLines, currentMapping);
+  };
 
   const getBankEnum = (bankaHesapAdi: string) => {
     const upper = bankaHesapAdi.toUpperCase();
@@ -56,14 +110,40 @@ export default function BulkImportModal({ isOpen, onClose, onSuccess, currentSub
   };
 
   const extractInstallment = (aciklama: string) => {
-    const match = aciklama.toUpperCase().match(/(\d+)\s*(TKS|TAKSİT|TAKSIT)/);
+    const upper = aciklama.toUpperCase();
+    // Check for "TEK" or "PEŞİN"
+    if (upper.includes('TEK') || upper.includes('PESİN') || upper.includes('PEŞİN')) return 1;
+    
+    const match = upper.match(/(\d+)\s*(TKS|TAKSİT|TAKSIT|TKST)/);
     if (match) {
       return parseInt(match[1], 10);
     }
-    return 1;
+    return null; // Return null if unclear instead of 1
   };
 
-  const handlePasteData = () => {
+  const parseExcelDate = (dateStr: string) => {
+    if (!dateStr) return null;
+    const dmyt = dateStr.trim().match(/(\d{1,2})[./-](\d{1,2})[./-](\d{4})/);
+    if (dmyt) {
+      return `${dmyt[3]}-${dmyt[2].padStart(2, '0')}-${dmyt[1].padStart(2, '0')}`;
+    }
+    return null;
+  };
+
+  const detectSube = (subeStr: string): Sube | null => {
+    if (!subeStr) return null;
+    const upper = subeStr.toUpperCase();
+    if (upper.includes('MERKEZ')) return 'MERKEZ';
+    if (upper.includes('ANKARA')) return 'ANKARA';
+    if (upper.includes('BURSA')) return 'BURSA';
+    if (upper.includes('BAYRAMPAŞA') || upper.includes('B.PAŞA')) return 'BAYRAMPAŞA';
+    if (upper.includes('MODOKO')) return 'MODOKO';
+    if (upper.includes('İZMİR') || upper.includes('IZMIR')) return 'İZMİR';
+    if (upper.includes('MALZEME')) return 'MALZEME';
+    return null;
+  };
+
+  const handlePasteData = (forcedMapping?: ColumnMapping) => {
     if (!pasteData.trim()) return;
 
     setLoading(true);
@@ -73,58 +153,125 @@ export default function BulkImportModal({ isOpen, onClose, onSuccess, currentSub
       const lines = pasteData.split('\n').filter(l => l.trim());
       if (lines.length === 0) throw new Error('Geçerli bir veri bulunamadı.');
 
-      // Header detection
-      let bankCol = -1, descCol = -1, amountCol = -1;
-      
-      // Look at the first row to see if it's a header
-      const firstLineCols = lines[0].split('\t').map(c => c.trim().toUpperCase());
-      firstLineCols.forEach((col, idx) => {
-        if (col === 'BANKA HESAP ADI' || (col.includes('BANKA') && col.includes('ADI'))) bankCol = idx;
-        if (col === 'AÇIKLAMA' || col.includes('ACIKLAMA')) descCol = idx;
-        // Match "ALACAK" but NOT "DÖVİZ ALACAK"
-        if ((col === 'ALACAK' || col.includes('TUTAR')) && !col.includes('DÖVİZ')) amountCol = idx;
-      });
+      const gridData = lines.map(line => line.split('\t').map(c => c.trim()));
+      setRawLines(gridData);
 
-      // Start processing from row 0 if no header found, or row 1 if header found
-      const startIdx = (bankCol !== -1 && amountCol !== -1) ? 1 : 0;
-      
-      // Fallback to indices if headers not detected (Based on user screenshot: 3, 4, 5)
-      if (bankCol === -1) bankCol = 3;
-      if (descCol === -1) descCol = 4;
-      if (amountCol === -1) amountCol = 5;
+      let mapping: ColumnMapping = forcedMapping || {
+        bankCol: -1, descCol: -1, amountCol: -1, dateCol: -1, subeCol: -1
+      };
 
+      if (!forcedMapping) {
+        // Try to detect headers
+        const headers = gridData[0].map(h => h.toUpperCase());
+        headers.forEach((h, idx) => {
+          if (h === 'BANKA HESAP ADI' || (h.includes('BANKA') && h.includes('ADI'))) mapping.bankCol = idx;
+          if (h === 'AÇIKLAMA' || h.includes('ACIKLAMA')) mapping.descCol = idx;
+          if ((h.includes('ALACAK') || h.includes('TUTAR')) && !h.includes('DÖVİZ')) mapping.amountCol = idx;
+          if (h.includes('TARIH') || h.includes('TARİH')) mapping.dateCol = idx;
+          if (h.includes('SUBE') || h.includes('ŞUBE')) mapping.subeCol = idx;
+        });
+
+        // Default indices if still not found (Legacy compatibility)
+        if (mapping.bankCol === -1 && gridData[0].length > 6) mapping.bankCol = 6;
+        if (mapping.descCol === -1 && gridData[0].length > 5) mapping.descCol = 5;
+        if (mapping.amountCol === -1 && gridData[0].length > 3) mapping.amountCol = 3;
+      }
+
+      // Check if critical columns detected
+      if (mapping.bankCol === -1 || mapping.descCol === -1 || mapping.amountCol === -1) {
+        setDetectedColumns(mapping);
+        setStep('map');
+        setLoading(false);
+        return;
+      }
+
+      setStep('review');
+      processWithMapping(gridData, mapping);
+    } catch (err: any) {
+      setError(err.message);
+      setLoading(false);
+    }
+  };
+
+  const processWithMapping = (data: string[][], mapping: ColumnMapping) => {
+    try {
       const groups: Record<string, GroupedData> = {};
+      const startIdx = (data[0].some(h => h.includes('BANKA') || h.includes('TUTAR'))) ? 1 : 0;
 
-      for (let i = startIdx; i < lines.length; i++) {
-        const columns = lines[i].split('\t');
-        if (columns.length <= Math.max(bankCol, descCol, amountCol)) continue;
+      for (let i = startIdx; i < data.length; i++) {
+        const columns = data[i];
+        if (columns.length <= Math.max(mapping.bankCol, mapping.descCol, mapping.amountCol)) continue;
 
-        const bankaMetni = columns[bankCol]?.trim() || '';
-        const aciklamaMetni = columns[descCol]?.trim() || '';
-        const tutarMetni = columns[amountCol]?.trim() || '0';
-        
-        // Cleanup amount: Handle "15.722,00" or "15722" formats
+        const bankaMetni = columns[mapping.bankCol] || '';
+        const aciklamaMetni = columns[mapping.descCol] || '';
+        const tutarMetni = columns[mapping.amountCol] || '0';
+        const tarihMetni = mapping.dateCol !== -1 ? columns[mapping.dateCol] : '';
+        const subeMetni = mapping.subeCol !== -1 ? columns[mapping.subeCol] : '';
+
         const tutar = parseFloat(tutarMetni.replace(/\./g, '').replace(',', '.'));
-
         if (bankaMetni && !isNaN(tutar) && tutar > 0) {
           const bankaEnum = getBankEnum(bankaMetni);
           const taksit = extractInstallment(aciklamaMetni);
-          const key = `${bankaEnum}_${taksit}`;
+          const rowDate = parseExcelDate(tarihMetni) || importDate;
+          const rowSube = isAdmin ? (detectSube(subeMetni) || importSube) : importSube;
+
+          // BANKE BAZLI TAKSIT KONTROLÜ
+          let isInstallmentValid = true;
+          let unsupportedMessage = '';
+          
+          if (taksit !== null) {
+              const activeSetting = allBankSettings.find(s => 
+                  s.banka_adi === bankaEnum && 
+                  isWithinInterval(parseISO(rowDate), {
+                      start: parseISO(s.baslangic_tarihi),
+                      end: s.bitis_tarihi ? parseISO(s.bitis_tarihi) : parseISO('2099-12-31')
+                  })
+              );
+
+              if (activeSetting) {
+                  const allowedTaksits = Object.keys(activeSetting.komisyon_oranlari);
+                  if (!allowedTaksits.includes(taksit.toString())) {
+                      isInstallmentValid = false;
+                      const maxTaksit = Math.max(...allowedTaksits.map(Number));
+                      unsupportedMessage = `${bankaEnum} için ${taksit} taksit tanımlı değil! (Max: ${maxTaksit})`;
+                  }
+              }
+          }
+
+          // EĞER TAKSİT GEÇERSİZSE VEYA BELİRSİZSE GRUPLAMA YAPMA
+          const key = (taksit === null || !isInstallmentValid)
+            ? `unclear_${i}_${bankaEnum}` 
+            : `${bankaEnum}_${taksit}_${rowDate}_${rowSube}`;
 
           if (!groups[key]) {
-            groups[key] = { id: key, banka: bankaEnum, taksit, tutar: 0, count: 0 };
+            groups[key] = { 
+                id: key, 
+                banka: bankaEnum, 
+                taksit: isInstallmentValid ? taksit : null, 
+                tutar: 0, 
+                count: 0,
+                tarih: rowDate, 
+                sube: rowSube,
+                originalLineIndices: [],
+                originalRawData: [],
+                isInstallmentValid,
+                unsupportedMessage
+            };
           }
           groups[key].tutar += tutar;
           groups[key].count += 1;
+          groups[key].originalLineIndices.push(i + 1); 
+          groups[key].originalRawData.push(aciklamaMetni || bankaMetni);
         }
       }
 
-      const result = Object.values(groups).sort((a, b) => b.tutar - a.tutar);
+      const result = Object.values(groups).sort((a, b) => b.tarih.localeCompare(a.tarih) || b.tutar - a.tutar);
       if (result.length === 0) {
-        throw new Error('Veri ayrıştırılamadı. Lütfen direkt Excel tablosundan kopyaladığınızdan (Banka, Açıklama ve Alacak sütunlarını içerdiğinden) emin olun.');
+        throw new Error('Veri ayrıştırılamadı. Lütfen sütun seçimlerinizi kontrol edin.');
       }
 
       setGroupedRecords(result);
+      setStep('review');
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -134,64 +281,127 @@ export default function BulkImportModal({ isOpen, onClose, onSuccess, currentSub
 
   const handleProcess = async () => {
     if (processLoading || groupedRecords.length === 0) return;
+    if (!user) {
+        setError('Oturumunuz kapalı görünüyor. Lütfen sayfayı yenileyip tekrar giriş yapın.');
+        return;
+    }
+
+    // Check if all taksits are filled
+    if (groupedRecords.some(g => g.taksit === null)) {
+        setError('Lütfen taksit sayısı belirsiz olan (kırmızı işaretli) satırları manuel doldurun.');
+        return;
+    }
 
     setProcessLoading(true);
     setError(null);
     setProgressMsg('Kayıtlar işleniyor...');
 
     try {
-      if (!importDate) throw new Error('Lütfen geçerli bir tarih seçin.');
-
-      const { data: bSettings } = await supabase.from('banka_ayarlari').select('*');
-      const { data: holData } = await supabase.from('tatil_gunleri').select('tarih');
+      const { data: bSettings, error: bSettingsErr } = await supabase.from('banka_ayarlari').select('*');
+      if (bSettingsErr) throw bSettingsErr;
+      
+      const { data: holData, error: holErr } = await supabase.from('tatil_gunleri').select('tarih');
+      if (holErr) throw holErr;
+      
       const holidaysList = (holData || []).map(h => h.tarih);
 
-      for (const group of groupedRecords) {
+      // 1. Prepare Records for Bulk Insert
+      const recordsToInsert = groupedRecords.map(group => {
+        const musteriAdi = `${group.banka.split(' ')[0]} ${group.taksit} TAKSİT TOPLU`;
+        const finalSube = isAdmin ? group.sube : currentSube;
+        return {
+          tarih: group.tarih,
+          musteri_adi: musteriAdi,
+          banka: group.banka,
+          cekim_subesi: finalSube,
+          sube_adi: finalSube,
+          tutar: group.tutar,
+          taksit: group.taksit,
+          user_id: user?.id,
+          notlar: `Excel'den Toplu Aktarım (${group.count} işlem)`
+        };
+      });
+
+      console.log('Aktarım Başlıyor. İlk Kayıt Örneği:', recordsToInsert[0]);
+      console.log('Kullanıcı ID:', user?.id);
+      console.log('Admin mi?:', isAdmin);
+
+      // 2. Bulk Insert Records
+      setProgressMsg('Kayıtlar veritabanına yazılıyor...');
+      const { data: insertedRecords, error: insertErr } = await supabase
+        .from('kayitlar')
+        .insert(recordsToInsert)
+        .select('id, banka, taksit, tarih, tutar');
+
+      if (insertErr) {
+        console.error('Kayıt ekleme hatası:', insertErr);
+        throw new Error(`Kayıtlar eklenemedi: ${insertErr.message}`);
+      }
+
+      if (!insertedRecords || insertedRecords.length === 0) {
+        throw new Error('Kayıtlar eklendi ancak veri geri alınamadı.');
+      }
+
+      // 3. Prepare Payment Plans for Bulk Insert
+      setProgressMsg('Ödeme planları oluşturuluyor...');
+      const allPlans: any[] = [];
+      
+      insertedRecords.forEach((record) => {
+        if (!record.banka.includes('POS')) return;
+
         let bankSetting = bSettings?.sort((a, b) => new Date(b.baslangic_tarihi).getTime() - new Date(a.baslangic_tarihi).getTime())
-          .find(s => s.banka_adi === group.banka && new Date(s.baslangic_tarihi) <= new Date(importDate));
+          .find(s => s.banka_adi === record.banka && new Date(s.baslangic_tarihi) <= new Date(record.tarih));
         
         if (!bankSetting) {
-            bankSetting = bSettings?.find(s => s.banka_adi === group.banka) || {
-                banka_adi: group.banka, vade_gun: 30, komisyon_oranlari: { [group.taksit]: 0 }
+            bankSetting = bSettings?.find(s => s.banka_adi === record.banka) || {
+                banka_adi: record.banka, vade_gun: 30, komisyon_oranlari: { [record.taksit]: 0 }
             };
         }
 
-        const musteriAdi = `${group.banka.split(' ')[0]} ${group.taksit} TAKSİT TOPLU`;
-        const { data: newRecord, error: insertErr } = await supabase.from('kayitlar').insert({
-          tarih: importDate, musteri_adi: musteriAdi, banka: group.banka, 
-          cekim_subesi: importSube, sube_adi: importSube,
-          tutar: group.tutar, taksit: group.taksit, user_id: user?.id,
-          notlar: `Excel'den Kopyala-Yapıştır (${group.count} işlem)`
-        }).select('id').single();
+        const plan = generatePaymentSchedule(
+            { tarih: record.tarih, tutar: record.tutar, taksit: record.taksit, banka: record.banka },
+            bankSetting, holidaysList
+        );
 
-        if (!insertErr && group.banka.includes('POS')) {
-            const plan = generatePaymentSchedule(
-                { tarih: importDate, tutar: group.tutar, taksit: group.taksit, banka: group.banka },
-                bankSetting, holidaysList
-            );
-            await supabase.from('odeme_plani').insert(plan.map(p => ({
-                kayit_id: newRecord.id, taksit_no: p.taksit_no, planlanan_tarih: p.planlanan_tarih,
-                net_tutar: p.net_tutar, komisyon_tutar: p.komisyon_tutar, ana_tutar: p.ana_tutar, durum: 'BEKLEMEDE'
-            })));
+        plan.forEach(p => {
+          allPlans.push({
+            kayit_id: record.id,
+            taksit_no: p.taksit_no,
+            planlanan_tarih: p.planlanan_tarih,
+            net_tutar: p.net_tutar,
+            komisyon_tutar: p.komisyon_tutar,
+            ana_tutar: p.ana_tutar,
+            durum: 'BEKLEMEDE'
+          });
+        });
+      });
+
+      // 4. Bulk Insert Payment Plans
+      if (allPlans.length > 0) {
+        setProgressMsg(`${allPlans.length} taksit planı kaydediliyor...`);
+        const { error: planErr } = await supabase.from('odeme_plani').insert(allPlans);
+        if (planErr) {
+          console.error('Ödeme planı ekleme hatası:', planErr);
+          throw new Error(`Ödeme planları eklenemedi: ${planErr.message}`);
         }
       }
       
-      setGroupedRecords([]); // Mükerrer kaydı önlemek için listeyi hemen temizle
+      const totalTutar = groupedRecords.reduce((sum, g) => sum + g.tutar, 0);
+      const totalCount = groupedRecords.reduce((sum, g) => sum + g.count, 0);
 
-      // AUDIT LOG: İşlem tamamlandığında detaylı kayıt tut
+      // AUDIT LOG
       await logAction({
         userId: user?.id || '',
-        subeAdi: importSube,
+        subeAdi: currentSube,
         action: 'TOPLU_AKTARIM',
         details: {
-          tarih: importDate,
-          toplam_tutar: groupedRecords.reduce((sum, g) => sum + g.tutar, 0),
+          toplam_tutar: totalTutar,
           grup_adedi: groupedRecords.length,
-          toplam_satir: groupedRecords.reduce((sum, g) => sum + g.count, 0),
-          bankalar: groupedRecords.map(g => `${g.banka} (${g.taksit} TKS)`)
+          toplam_satir: totalCount,
         }
       });
 
+      setGroupedRecords([]);
       setSuccess(true);
       setTimeout(() => {
         setSuccess(false);
@@ -199,203 +409,399 @@ export default function BulkImportModal({ isOpen, onClose, onSuccess, currentSub
         onClose();
       }, 2000);
     } catch (err: any) {
+       console.error('Aktarım hatası detay:', err);
        const msg = err.message || 'Bilinmeyen bir hata';
-       setError(`Aktarım Durduruldu: ${msg}. Lütfen bu bankanın ayarlarını kontrol edin.`);
+       setError(`Aktarım Durduruldu: ${msg}`);
     } finally {
       setProcessLoading(false);
     }
   };
 
   const getBankColor = (bankName: string) => {
-    if (bankName.includes('DENİZ')) return 'text-blue-400 bg-blue-500/10';
-    if (bankName.includes('FİNANS')) return 'text-purple-400 bg-purple-500/10';
-    if (bankName.includes('YAPI KREDİ')) return 'text-indigo-400 bg-indigo-500/10';
-    if (bankName.includes('ZİRAAT')) return 'text-red-400 bg-red-500/10';
-    if (bankName.includes('KUVEYT')) return 'text-yellow-500 bg-yellow-600/10';
-    return 'text-slate-400 bg-slate-500/10';
+    if (bankName.includes('DENİZ')) return 'text-blue-400 bg-blue-500/20 border-blue-500/30';
+    if (bankName.includes('FİNANS')) return 'text-purple-400 bg-purple-500/20 border-purple-500/30';
+    if (bankName.includes('YAPI KREDİ')) return 'text-indigo-400 bg-indigo-500/20 border-indigo-500/30';
+    if (bankName.includes('ZİRAAT')) return 'text-red-400 bg-red-500/20 border-red-500/30';
+    if (bankName.includes('KUVEYT')) return 'text-emerald-400 bg-emerald-500/20 border-emerald-500/30';
+    if (bankName.includes('İŞ')) return 'text-cyan-400 bg-cyan-500/20 border-cyan-500/30';
+    if (bankName.includes('AKBANK')) return 'text-rose-400 bg-rose-500/20 border-rose-500/30';
+    if (bankName.includes('GARANT')) return 'text-teal-400 bg-teal-500/20 border-teal-500/30';
+    return 'text-slate-400 bg-slate-500/20 border-slate-500/30';
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 overflow-y-auto">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-xl p-4 md:p-10 overflow-hidden">
       <motion.div
-        initial={{ opacity: 0, scale: 0.95, y: 20 }}
+        initial={{ opacity: 0, scale: 0.98, y: 30 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.95, y: 20 }}
-        className="glassmorphism w-full max-w-4xl max-h-[90vh] rounded-3xl shadow-2xl flex flex-col overflow-hidden border border-white/10 relative"
+        exit={{ opacity: 0, scale: 0.98, y: 30 }}
+        className="glassmorphism w-full max-w-7xl h-full max-h-[95vh] rounded-[40px] shadow-[0_0_100px_rgba(0,0,0,0.5)] flex flex-col overflow-hidden border border-white/10 relative"
       >
-        <div className="flex items-center justify-between p-6 border-b border-white/5 bg-white/5">
-          <div className="flex items-center gap-4">
-             <div className="w-12 h-12 rounded-2xl bg-primary/20 flex items-center justify-center border border-primary/30">
-                <ClipboardPaste className="w-6 h-6 text-primary" />
+        {/* Header Section */}
+        <div className="flex items-center justify-between px-10 py-8 border-b border-white/5 bg-white/5 relative z-10">
+          <div className="flex items-center gap-6">
+             <div className="w-16 h-16 rounded-[22px] bg-primary/20 flex items-center justify-center border border-primary/30 shadow-lg shadow-primary/20">
+                <ClipboardPaste className="w-8 h-8 text-primary" />
              </div>
              <div>
-               <h2 className="text-xl font-black text-white tracking-tight uppercase">Excel'den Hızlı Aktarım</h2>
-               <p className="text-xs text-muted-foreground font-medium uppercase tracking-widest">Kopyala-Yapıştır ile Toplu Kayıt</p>
+               <h2 className="text-2xl font-black text-white tracking-tight uppercase italic leading-none mb-1">EXCEL AKTARIM MERKEZİ</h2>
+               <p className="text-[10px] text-primary/80 font-black uppercase tracking-[0.3em] opacity-80">Smart Bulk Import Engine v2.0</p>
              </div>
           </div>
-          <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-2xl text-gray-400 hover:text-white transition-all transform hover:rotate-90" disabled={processLoading}>
-            <X className="w-6 h-6" />
+
+          {/* Stepper UI */}
+          <div className="hidden lg:flex items-center gap-4 bg-black/40 px-8 py-3 rounded-2xl border border-white/5">
+                {[
+                    { id: 'paste', label: 'VERI GIRISI', num: '01' },
+                    { id: 'map', label: 'SUTUN TANIMA', num: '02' },
+                    { id: 'review', label: 'KONTROL & ONAY', num: '03' }
+                ].map((s, i: number) => (
+                    <div key={s.id} className="flex items-center gap-4">
+                        <div className="flex items-center gap-2">
+                            <span className={`text-[10px] font-black ${step === s.id ? 'text-primary' : 'text-white/20'}`}>{s.num}</span>
+                            <span className={`text-[11px] font-black uppercase tracking-widest ${step === s.id ? 'text-white' : 'text-white/20'}`}>{s.label}</span>
+                        </div>
+                        {i < 2 && <div className="w-8 h-[1px] bg-white/10" />}
+                    </div>
+                ))}
+          </div>
+
+          <button 
+            onClick={onClose} 
+            className="p-3 hover:bg-white/10 rounded-2xl text-gray-400 hover:text-white transition-all transform hover:rotate-90 border border-transparent hover:border-white/10" 
+            disabled={processLoading}
+          >
+            <X className="w-7 h-7" />
           </button>
         </div>
 
-        <div className="p-8 flex-1 overflow-y-auto custom-scrollbar">
+        <div className="px-10 py-8 flex-1 overflow-y-auto custom-scrollbar relative">
             {/* HER ZAMAN GÖRÜNÜR: Tarih ve Şube Seçimi */}
-            <div className="bg-white/5 border border-white/10 p-6 rounded-3xl grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-                <div className="space-y-2">
-                    <label className="text-[10px] uppercase font-black text-primary tracking-widest ml-1">İşlem Tarihi</label>
+            <div className="bg-white/[0.03] border border-white/10 p-8 rounded-[32px] grid grid-cols-1 md:grid-cols-2 gap-8 mb-10 shadow-inner">
+                <div className="space-y-3">
+                    <div className="flex items-center gap-2 ml-1">
+                        <Loader2 className="w-3 h-3 text-primary animate-pulse" />
+                        <label className="text-[10px] uppercase font-black text-white/50 tracking-[0.2em]">Varsayılan İşlem Tarihi</label>
+                    </div>
                     <input
                         type="date"
                         value={importDate}
                         onChange={(e) => setImportDate(e.target.value)}
-                        className="w-full bg-black/40 border border-white/10 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-primary/50 transition-all font-bold"
+                        className="w-full bg-black/60 border border-white/10 rounded-[22px] px-6 py-4 text-sm text-white focus:outline-none focus:border-primary/50 transition-all font-black shadow-lg"
                     />
                 </div>
-                <div className="space-y-2">
-                    <label className="text-[10px] uppercase font-black text-primary tracking-widest ml-1">Çekim Şubesi</label>
+                <div className="space-y-3">
+                    <div className="flex items-center gap-2 ml-1">
+                        <AlertCircle className="w-3 h-3 text-primary" />
+                        <label className="text-[10px] uppercase font-black text-white/50 tracking-[0.2em]">Varsayılan POS Şubesi</label>
+                    </div>
                     <select
                         value={importSube}
                         onChange={(e) => setImportSube(e.target.value as Sube)}
                         disabled={!isAdmin}
-                        className="w-full bg-black/40 border border-white/10 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-primary/50 transition-all font-bold appearance-none disabled:opacity-50"
+                        className="w-full bg-black/60 border border-white/10 rounded-[22px] px-6 py-4 text-sm text-white focus:outline-none focus:border-primary/50 transition-all font-black appearance-none disabled:opacity-50 shadow-lg"
                     >
                         {subeler.map(s => <option key={s} value={s}>{s}</option>)}
                     </select>
                 </div>
             </div>
 
-            {!groupedRecords.length ? (
-                <div className="space-y-6">
-                    <div className="bg-primary/5 border border-primary/20 rounded-2xl p-5 flex items-start gap-4">
-                        <AlertCircle className="w-6 h-6 text-primary flex-shrink-0 mt-0.5" />
-                        <div>
-                            <h3 className="text-sm font-black text-white uppercase mb-1 tracking-wider">Nasıl Kullanılır?</h3>
-                            <p className="text-sm text-gray-400 leading-relaxed">
-                                Excel tablonuzdan dilediğiniz satırları seçip <b>Ctrl+C</b> ile kopyalayın. 
-                                Ardından aşağıdaki alana <b>Ctrl+V</b> ile yapıştırın ve "Çözümle" butonuna basın.
-                                <span className="block mt-2 text-[10px] text-primary font-bold">Önemli: Müşteri isimleri atlanır, sadece Banka ve Taksit toplamları işlenir.</span>
+            {/* ADIM 1: Veri Yapıştırma */}
+            {step === 'paste' && (
+                <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} className="space-y-8">
+                    <div className="bg-primary/10 border border-primary/20 rounded-[32px] p-8 flex items-start gap-6 shadow-2xl relative overflow-hidden group">
+                        <div className="absolute top-0 right-0 p-10 opacity-5 group-hover:opacity-10 transition-opacity">
+                            <FileSpreadsheet className="w-32 h-32 text-primary" />
+                        </div>
+                        <div className="w-14 h-14 bg-primary/20 rounded-2xl flex items-center justify-center shrink-0 border border-primary/30">
+                            <AlertCircle className="w-7 h-7 text-primary" />
+                        </div>
+                        <div className="relative z-10">
+                            <h3 className="text-lg font-black text-white uppercase mb-2 tracking-tight">Akıllı Veri Girişi</h3>
+                            <p className="text-sm text-gray-400 leading-relaxed max-w-2xl font-medium">
+                                Excel listenizdeki satırları seçip <kbd className="bg-white/10 px-2 py-1 rounded text-xs text-primary font-bold">CTRL+C</kbd> ile kopyalayın. 
+                                Ardından buraya gelip <kbd className="bg-white/10 px-2 py-1 rounded text-xs text-primary font-bold">CTRL+V</kbd> ile yapıştırın. 
+                                Sistemimiz sütunları, tutarları ve taksit sayılarını otomatik olarak analiz edecektir.
                             </p>
                         </div>
                     </div>
 
-                    <div className="space-y-4">
-                        <div className="relative">
+                    <div className="space-y-6">
+                        <div className="relative group">
+                            <div className="absolute -inset-1 bg-gradient-to-r from-primary/20 to-indigo-500/20 rounded-[40px] blur opacity-25 group-hover:opacity-50 transition duration-1000 group-hover:duration-200"></div>
                             <textarea
                                 value={pasteData}
                                 onChange={(e) => setPasteData(e.target.value)}
-                                placeholder="Excel verisini buraya yapıştırın..."
-                                className="w-full h-80 bg-black/40 border-2 border-white/5 focus:border-primary/50 rounded-3xl p-6 text-sm font-mono text-gray-300 focus:outline-none transition-all placeholder:text-gray-700 custom-scrollbar"
+                                placeholder="Veriyi buraya yapıştırın..."
+                                className="relative w-full h-[400px] bg-black/40 border-2 border-white/5 focus:border-primary/50 rounded-[40px] p-10 text-base font-mono text-gray-200 focus:outline-none transition-all placeholder:text-gray-800 custom-scrollbar shadow-2xl"
                             />
                         </div>
                         <button
-                            onClick={handlePasteData}
+                            onClick={() => handlePasteData()}
                             disabled={!pasteData.trim() || loading}
-                            className="w-full bg-primary hover:bg-primary/90 text-white py-4 rounded-2xl font-black text-sm uppercase tracking-widest shadow-2xl shadow-primary/20 transition-all active:scale-[0.98] flex items-center justify-center gap-3 disabled:opacity-50"
+                            className="w-full bg-primary hover:bg-primary/90 text-white py-6 rounded-[28px] font-black text-base uppercase tracking-[0.2em] shadow-[0_20px_40px_-15px_rgba(234,179,8,0.3)] transition-all active:scale-[0.98] flex items-center justify-center gap-4 disabled:opacity-50 group"
                         >
-                            {loading ? <Loader2 className="w-6 h-6 animate-spin" /> : <FileSpreadsheet className="w-6 h-6" />}
-                            Veriyi Çözümle ve Grupla
+                            {loading ? <Loader2 className="w-7 h-7 animate-spin" /> : <ClipboardPaste className="w-7 h-7 group-hover:scale-110 transition-transform" />}
+                            VERİYİ ANALİZ ET VE İŞLE
                         </button>
                     </div>
-                </div>
-            ) : (
-                <div className="space-y-6">
-                    <div className="flex flex-col sm:flex-row justify-between items-center gap-6 bg-white/5 p-6 rounded-3xl border border-white/10">
-                        <div className="text-center sm:text-left">
-                            <h3 className="text-2xl font-black text-white tracking-tighter">GRUP ÖZETİ</h3>
-                            <p className="text-xs text-gray-400 font-bold uppercase tracking-widest">Aynı banka ve taksitler birleştirildi</p>
+                </motion.div>
+            )}
+
+            {/* ADIM 2: Sütun Eşleştirme */}
+            {step === 'map' && (
+                <motion.div initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} className="space-y-10">
+                    <div className="bg-white/[0.03] p-10 rounded-[40px] border border-white/10 shadow-2xl">
+                        <div className="flex items-center gap-4 mb-8">
+                            <div className="w-2 h-8 bg-primary rounded-full" />
+                            <h3 className="text-2xl font-black text-white uppercase tracking-tight">SÜTUN TANIMLAMA</h3>
                         </div>
-                        <div className="flex gap-8">
-                            <div className="text-right">
-                                <div className="text-[10px] uppercase text-gray-500 font-black tracking-widest">KALEM</div>
-                                <div className="text-2xl font-black text-white">{groupedRecords.length}</div>
+                        <p className="text-sm text-gray-400 mb-10 max-w-xl font-medium">Sistem sütunları tam tanımlayamadı. Lütfen aşağıdaki ızgara (grid) üzerinden verilerin hangi sütunlarda olduğunu sisteme öğretin.</p>
+                        
+                        <div className="overflow-x-auto mb-10 bg-black/60 rounded-[32px] border border-white/5 max-h-[400px] custom-scrollbar shadow-inner">
+                            <table className="w-full text-xs text-left border-collapse">
+                                <thead className="bg-white/10 sticky top-0 z-10 backdrop-blur-xl">
+                                    <tr className="text-[10px] uppercase font-black text-primary tracking-[0.2em] border-b border-white/10 font-mono">
+                                        <th className="px-4 py-4 w-12 text-center bg-white/5 border-r border-white/10 italic">#</th>
+                                        {rawLines[0]?.map((_: string, i: number) => (
+                                            <th key={i} className="px-8 py-5 border-r border-white/10 min-w-[200px]">SÜTUN {i+1}</th>
+                                        ))}
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-white/5">
+                                    {rawLines.slice(0, 10).map((row: string[], rowIdx: number) => (
+                                        <tr key={rowIdx} className="hover:bg-primary/5 transition-colors group">
+                                            <td className="px-4 py-4 text-center bg-white/[0.02] border-r border-white/10 text-[10px] font-black text-gray-600 group-hover:text-primary transition-colors">{rowIdx + 1}</td>
+                                            {row.map((col: string, i: number) => (
+                                                <td key={i} className="px-8 py-5 text-white/70 font-bold border-r border-white/10 last:border-0 truncate max-w-[300px]" title={col}>
+                                                    {col}
+                                                </td>
+                                            ))}
+                                        </tr>
+                                    ))}
+                                    {rawLines.length > 10 && (
+                                        <tr>
+                                            <td colSpan={rawLines[0]?.length + 1} className="px-10 py-6 text-center text-[10px] text-primary font-black uppercase tracking-[0.3em] bg-white/[0.01] italic opacity-50">
+                                                ... {rawLines.length - 10} SATIR DAHA ANALİZ EDİLDİ ...
+                                            </td>
+                                        </tr>
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-10 bg-black/20 p-10 rounded-[32px] border border-white/5">
+                            {[
+                                { key: 'bankCol' as keyof ColumnMapping, label: 'Banka / POS Adı' },
+                                { key: 'descCol' as keyof ColumnMapping, label: 'Açıklama / Taksit' },
+                                { key: 'amountCol' as keyof ColumnMapping, label: 'Tutar / Alacak' },
+                                { key: 'dateCol' as keyof ColumnMapping, label: 'İşlem Tarihi (Ops)' },
+                                { key: 'subeCol' as keyof ColumnMapping, label: 'Şube Bilgisi (Ops)' },
+                            ].map((field) => (
+                                <div key={field.key} className="space-y-3">
+                                    <label className="text-[10px] uppercase font-black text-primary tracking-[0.2em] ml-2">{field.label}</label>
+                                    <select
+                                        value={currentMapping[field.key]}
+                                        onChange={(e) => setDetectedColumns({ ...currentMapping, [field.key]: parseInt(e.target.value) })}
+                                        className="w-full bg-black/60 border border-white/10 rounded-2xl px-6 py-4 text-sm text-white focus:outline-none focus:border-primary/50 transition-all font-black appearance-none shadow-xl cursor-pointer hover:border-white/20"
+                                    >
+                                        <option value="-1">SEÇİM YAPILMADI</option>
+                                        {rawLines[0]?.map((_, i) => <option key={i} value={i}>SÜTUN {i+1}</option>)}
+                                    </select>
+                                </div>
+                            ))}
+                        </div>
+
+                        <div className="mt-12 flex gap-6">
+                            <button
+                                onClick={() => setStep('paste')}
+                                className="flex-1 bg-white/5 hover:bg-white/10 text-white/50 hover:text-white py-5 rounded-[22px] font-black text-[10px] uppercase tracking-[0.3em] transition-all border border-white/5"
+                            >
+                                GERİ DÖN
+                            </button>
+                            <button
+                                onClick={handleApplyMapping}
+                                className="flex-[2] bg-primary hover:bg-primary/90 text-white py-5 rounded-[22px] font-black text-[11px] uppercase tracking-[0.3em] shadow-xl shadow-primary/20 transition-all active:scale-[0.98]"
+                            >
+                                EŞLEŞTİRMEYİ ONAYLA VE İŞLE
+                            </button>
+                        </div>
+                    </div>
+                </motion.div>
+            )}
+
+            {/* ADIM 3: İnceleme ve Kayıt */}
+            {step === 'review' && (
+                <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="space-y-10">
+                    <div className="flex flex-col xl:flex-row justify-between items-stretch gap-10">
+                        <div className="flex-grow bg-white/[0.03] p-10 rounded-[40px] border border-white/10 shadow-2xl flex flex-col sm:flex-row items-center justify-between gap-10">
+                            <div className="text-center sm:text-left">
+                                <p className="text-[10px] text-primary font-black uppercase tracking-[0.3em] mb-2 opacity-70 italic">Analiz Özeti</p>
+                                <h3 className="text-4xl font-black text-white tracking-tighter leading-none italic uppercase">AKTARIŞ KONTROLÜ</h3>
+                                <p className="text-sm text-gray-500 font-bold uppercase tracking-widest mt-2">{groupedRecords.length} Gruplanmış İşlem</p>
                             </div>
-                            <div className="text-right border-l border-white/10 pl-8">
-                                <div className="text-[10px] uppercase text-gray-500 font-black tracking-widest">TOPLAM TUTAR</div>
-                                <div className="text-3xl font-black text-green-400 tracking-tighter">₺{new Intl.NumberFormat('tr-TR').format(groupedRecords.reduce((sum, p) => sum + p.tutar, 0))}</div>
+                            <div className="flex flex-wrap justify-center sm:justify-end gap-10">
+                                <div className="text-right">
+                                    <p className="text-[10px] uppercase text-gray-500 font-black tracking-[0.2em] mb-2 uppercase">Toplam Satır</p>
+                                    <div className="text-3xl font-black text-white italic">{groupedRecords.reduce((sum, g) => sum + g.count, 0)}</div>
+                                </div>
+                                <div className="text-right border-l border-white/10 pl-10">
+                                    <p className="text-[10px] uppercase text-gray-500 font-black tracking-[0.2em] mb-2 uppercase">GENEL TOPLAM</p>
+                                    <div className="text-5xl font-black text-green-400 tracking-tighter italic">
+                                        ₺{new Intl.NumberFormat('tr-TR', { minimumFractionDigits: 2 }).format(groupedRecords.reduce((sum, p) => sum + p.tutar, 0))}
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
 
-                    <div className="bg-black/30 rounded-3xl border border-white/10 overflow-hidden shadow-2xl">
-                        <table className="w-full text-sm text-left table-fixed">
-                            <thead className="bg-white/5 text-[10px] uppercase font-black text-gray-400 tracking-widest">
+                    <div className="bg-black/40 rounded-[45px] border border-white/10 overflow-hidden shadow-[0_40px_100px_-20px_rgba(0,0,0,0.6)]">
+                        <table className="w-full text-left table-fixed border-collapse">
+                            <thead className="bg-white/5 text-[10px] uppercase font-black text-white/30 tracking-[0.25em]">
                                 <tr>
-                                    <th className="px-6 py-5 w-[30%]">Kayıt Adı</th>
-                                    <th className="px-6 py-5 w-[25%]">Banka Türü</th>
-                                    <th className="px-6 py-5 w-[15%] text-center">Taksit</th>
-                                    <th className="px-6 py-5 w-[15%] text-center">İşlem</th>
-                                    <th className="px-6 py-5 w-[15%] text-right">Tutar</th>
+                                    <th className="px-10 py-8 w-[12%] italic">SIRA (#)</th>
+                                    <th className="px-10 py-8 w-[18%]">TARİH / ŞUBE</th>
+                                    <th className="px-10 py-8 w-[22%]">ÖDEME KANALI</th>
+                                    <th className="px-10 py-8 w-[25%] text-center">TAKSİT & DURUM</th>
+                                    <th className="px-10 py-8 w-[23%] text-right italic">TOPLAM TUTAR</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-white/5">
                                 {groupedRecords.map((g) => (
-                                    <tr key={g.id} className="hover:bg-white/5 transition-all">
-                                        <td className="px-6 py-5">
-                                            <div className="font-black text-white text-sm truncate" title={`${g.banka.split(' ')[0]} ${g.taksit} TAKSİT TOPLU`}>
-                                                {g.banka.split(' ')[0]} {g.taksit} TAKSİT TOPLU
+                                    <tr key={g.id} className="hover:bg-white/[0.03] transition-all group">
+                                        <td className="px-10 py-8">
+                                            <div className="flex flex-wrap gap-1.5">
+                                                {g.originalLineIndices.map(idx => (
+                                                    <span key={idx} className="bg-white/10 hover:bg-primary/20 hover:text-primary px-2 py-1 rounded-md text-[9px] font-black text-gray-500 transition-colors border border-white/5">#{idx}</span>
+                                                ))}
                                             </div>
                                         </td>
-                                        <td className="px-6 py-5">
-                                            <span className={`inline-block px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-tighter whitespace-nowrap ${getBankColor(g.banka)}`}>
+                                        <td className="px-10 py-8">
+                                            <div className="text-sm font-black text-white tracking-widest">{new Date(g.tarih).toLocaleDateString('tr-TR')}</div>
+                                            <div className="text-[10px] text-primary/60 font-black uppercase mt-1 tracking-tighter italic">{g.sube}</div>
+                                        </td>
+                                        <td className="px-10 py-8">
+                                            <span className={`inline-flex items-center px-4 py-2 rounded-2xl text-[10px] font-black uppercase tracking-widest border shadow-lg ${getBankColor(g.banka)}`}>
                                                 {g.banka}
                                             </span>
                                         </td>
-                                        <td className="px-6 py-5 text-center">
-                                            <span className="inline-flex items-center justify-center bg-primary/20 text-primary px-2.5 py-1 rounded-lg text-[10px] font-black">
-                                                {g.taksit} TKS
-                                            </span>
+                                        <td className="px-10 py-8 text-center">
+                                            {g.taksit === null ? (
+                                                <div className={`border-2 rounded-[28px] p-4 transition-all ${g.unsupportedMessage ? 'bg-orange-500/5 border-orange-500/30 ring-2 ring-orange-500/20' : 'bg-red-500/5 border-red-500/20 animate-pulse-slow'}`}>
+                                                    <div className="flex items-center justify-center gap-2 mb-3">
+                                                        {g.unsupportedMessage ? <Info className="w-4 h-4 text-orange-400" /> : <AlertCircle className="w-4 h-4 text-red-400" />}
+                                                        <p className={`text-[9px] font-black uppercase tracking-widest ${g.unsupportedMessage ? 'text-orange-400' : 'text-red-400'}`}>
+                                                            {g.unsupportedMessage ? 'GEÇERSİZ TAKSİT!' : 'SİSTEM ANLAYAMADI!'}
+                                                        </p>
+                                                    </div>
+                                                    
+                                                    {g.unsupportedMessage && (
+                                                        <p className="text-[10px] text-orange-200/70 font-bold mb-3 italic">"{g.unsupportedMessage}"</p>
+                                                    )}
+                                                    
+                                                    {!g.unsupportedMessage && (
+                                                        <div className="text-[10px] text-white/40 mb-3 italic">"{g.originalRawData[0]}"</div>
+                                                    )}
+
+                                                    <select
+                                                        onChange={(e) => updateGroupTaksit(g.id, parseInt(e.target.value))}
+                                                        className={`w-full border rounded-xl px-4 py-2 text-[11px] font-black focus:outline-none appearance-none text-center cursor-pointer transition-colors ${g.unsupportedMessage ? 'bg-orange-500/20 border-orange-500/30 text-orange-200 focus:border-orange-500' : 'bg-red-500/20 border-red-500/30 text-red-200 focus:border-red-500'}`}
+                                                    >
+                                                        <option value="" className="bg-slate-900 text-white">LÜTFEN SEÇİN</option>
+                                                        {(allBankSettings.find(s => 
+                                                            s.banka_adi === g.banka && 
+                                                            isWithinInterval(parseISO(g.tarih), {
+                                                                start: parseISO(s.baslangic_tarihi),
+                                                                end: s.bitis_tarihi ? parseISO(s.bitis_tarihi) : parseISO('2099-12-31')
+                                                            })
+                                                        )?.komisyon_oranlari ? Object.keys(allBankSettings.find(s => 
+                                                            s.banka_adi === g.banka && 
+                                                            isWithinInterval(parseISO(g.tarih), {
+                                                                start: parseISO(s.baslangic_tarihi),
+                                                                end: s.bitis_tarihi ? parseISO(s.bitis_tarihi) : parseISO('2099-12-31')
+                                                            })
+                                                        )!.komisyon_oranlari).map(Number).sort((a, b) => a - b) : [1,2,3,4,5,6,9,12,18]).map(n => (
+                                                            <option key={n} value={n} className="bg-slate-900 text-white">
+                                                                {n === 1 ? 'TEK ÇEKİM' : `${n} TAKSİT`}
+                                                            </option>
+                                                        ))}
+                                                    </select>
+                                                </div>
+                                            ) : (
+                                                <div className="inline-flex flex-col items-center">
+                                                    <span className="text-primary/40 text-[9px] font-black tracking-widest mb-1 uppercase">POS İŞLEMİ</span>
+                                                    <span className="bg-primary/10 text-primary border border-primary/20 px-6 py-2 rounded-xl text-xs font-black tracking-[0.1em] shadow-lg shadow-primary/5">
+                                                        {g.taksit} TAKSİT
+                                                    </span>
+                                                </div>
+                                            )}
                                         </td>
-                                        <td className="px-6 py-5 text-center text-gray-300 font-bold text-xs">{g.count} Satır</td>
-                                        <td className="px-6 py-5 text-right font-black text-primary text-lg tracking-tighter whitespace-nowrap">
-                                            ₺{new Intl.NumberFormat('tr-TR').format(g.tutar)}
+                                        <td className="px-10 py-8 text-right font-black text-primary text-2xl tracking-tighter italic group-hover:scale-105 transition-transform origin-right whitespace-nowrap">
+                                            ₺{new Intl.NumberFormat('tr-TR', { minimumFractionDigits: 2 }).format(g.tutar)}
                                         </td>
                                     </tr>
                                 ))}
                             </tbody>
                         </table>
                     </div>
-                </div>
+                </motion.div>
             )}
 
             {error && (
-                <div className="bg-destructive/10 border border-destructive/20 text-destructive p-5 rounded-2xl flex items-center gap-4 mt-6 animate-shake">
-                    <AlertCircle className="w-6 h-6 flex-shrink-0" />
-                    <p className="text-sm font-bold uppercase tracking-tight">{error}</p>
-                </div>
+                <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="bg-destructive/20 border-2 border-destructive/30 text-white p-8 rounded-[32px] flex items-center gap-6 mt-10 shadow-2xl">
+                    <div className="w-14 h-14 bg-destructive/20 rounded-2xl flex items-center justify-center shrink-0">
+                        <X className="w-8 h-8 text-destructive" />
+                    </div>
+                    <div>
+                        <h4 className="text-sm font-black uppercase tracking-widest mb-1 text-red-400">IŞLEM HATASI</h4>
+                        <p className="text-sm font-bold opacity-80">{error}</p>
+                    </div>
+                </motion.div>
             )}
         </div>
 
-        <div className="p-8 border-t border-white/5 bg-black/40 flex justify-end items-center gap-4">
-            {groupedRecords.length > 0 && !success && (
-                <button
-                    onClick={() => setGroupedRecords([])}
-                    disabled={processLoading}
-                    className="px-8 py-4 rounded-2xl font-black text-xs uppercase tracking-widest bg-white/5 border border-white/10 hover:bg-white/10 text-white transition-all disabled:opacity-50"
-                >
-                    İptal / Geri Dön
-                </button>
-            )}
-
-            {groupedRecords.length > 0 && !success && (
-                <button
-                    onClick={handleProcess}
-                    disabled={processLoading}
-                    className="px-10 py-4 rounded-2xl font-black text-xs uppercase tracking-widest bg-primary hover:bg-primary/90 text-white shadow-2xl shadow-primary/40 transition-all flex items-center gap-3 active:scale-95 disabled:opacity-50"
-                >
-                    {processLoading ? (
-                        <Loader2 className="w-5 h-5 animate-spin" />
-                    ) : (
-                        <CheckCircle2 className="w-5 h-5" />
-                    )}
-                    {processLoading ? progressMsg : 'Kaydı Sisteme İşle'}
-                </button>
-            )}
-
-            {success && (
-                <div className="flex items-center gap-3 text-green-400 font-black uppercase tracking-widest text-sm animate-bounce px-6 py-4 bg-green-500/10 rounded-2xl">
-                    <CheckCircle2 className="w-6 h-6" />
-                    Başarıyla Aktarıldı
+        <div className="px-10 py-10 border-t border-white/5 bg-black/60 flex justify-between items-center gap-6 relative z-10 backdrop-blur-2xl">
+            <div className="flex flex-col">
+                <p className="text-[10px] text-white/30 font-black uppercase tracking-[0.2em] mb-1">Güvenlik Kontrolü:</p>
+                <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                    <span className="text-[10px] text-white/60 font-black uppercase tracking-tight">Veri Bütünlüğü Doğrulandı</span>
                 </div>
-            )}
+            </div>
+
+            <div className="flex gap-6">
+                {step !== 'paste' && !success && (
+                    <button
+                        onClick={() => setStep('paste')}
+                        disabled={processLoading}
+                        className="px-10 py-5 rounded-[22px] font-black text-[10px] uppercase tracking-[0.2em] bg-white/5 border border-white/10 hover:bg-white/10 text-white transition-all disabled:opacity-50 active:scale-95 shadow-xl"
+                    >
+                        SİL VE YENİDEN BAŞLA
+                    </button>
+                )}
+
+                {step === 'review' && groupedRecords.length > 0 && !success && (
+                    <button
+                        onClick={handleProcess}
+                        disabled={processLoading}
+                        className="px-12 py-5 rounded-[22px] font-black text-xs uppercase tracking-[0.3em] bg-primary hover:bg-primary/90 text-white shadow-[0_20px_40px_-15px_rgba(234,179,8,0.4)] transition-all flex items-center gap-4 active:scale-95 disabled:opacity-50 group border border-white/10"
+                    >
+                        {processLoading ? (
+                            <Loader2 className="w-6 h-6 animate-spin" />
+                        ) : (
+                            <CheckCircle2 className="w-6 h-6 group-hover:scale-110 transition-transform" />
+                        )}
+                        {processLoading ? progressMsg : 'KAYITLARI SISTEME IŞLE'}
+                    </button>
+                )}
+
+                {success && (
+                    <motion.div initial={{ scale: 0.8 }} animate={{ scale: 1 }} className="flex items-center gap-4 text-emerald-400 font-black uppercase tracking-[0.3em] text-sm px-10 py-5 bg-emerald-500/20 border border-emerald-500/30 rounded-[22px] shadow-2xl shadow-emerald-500/20">
+                        <CheckCircle2 className="w-7 h-7" />
+                        AKTARIM BAŞARILI
+                    </motion.div>
+                )}
+            </div>
         </div>
       </motion.div>
     </div>

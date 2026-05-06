@@ -23,7 +23,7 @@ export default function AdminRequests() {
   const [loading, setLoading] = useState(true);
   const [processingId, setProcessingId] = useState<string | null>(null);
 
-  const role = user?.user_metadata?.role;
+  const role = user?.app_metadata?.role;
 
   useEffect(() => {
     fetchTalepler();
@@ -56,17 +56,27 @@ export default function AdminRequests() {
     setProcessingId(talep.id);
     try {
       if (talep.tip === 'SILME') {
-        const { error: delError } = await supabase
+        const { data: delData, error: delError } = await supabase
           .from('kayitlar')
           .delete()
-          .eq('id', talep.kayit_id);
+          .eq('id', talep.kayit_id)
+          .select();
+        
         if (delError) throw delError;
+        if (!delData || delData.length === 0) {
+          throw new Error('Kayıt silinemedi. Yetki sorunu olabilir veya kayıt zaten silinmiş.');
+        }
       } else if (talep.tip === 'DUZENLEME' && talep.yeni_veri) {
-        const { error: updError } = await supabase
+        const { data: updData, error: updError } = await supabase
           .from('kayitlar')
           .update(talep.yeni_veri)
-          .eq('id', talep.kayit_id);
+          .eq('id', talep.kayit_id)
+          .select();
+        
         if (updError) throw updError;
+        if (!updData || updData.length === 0) {
+          throw new Error('Kayıt güncellenemedi. Yetki sorunu olabilir.');
+        }
 
         // RECALCULATE PAYMENT PLAN IF POS
         const updatedRecord = { ...talep.kayitlar, ...talep.yeni_veri };

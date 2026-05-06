@@ -50,7 +50,7 @@ export default function Reports() {
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [isEditRequest, setIsEditRequest] = useState(false);
 
-  const role = user?.user_metadata?.role;
+  const role = user?.app_metadata?.role;
 
   useEffect(() => {
     fetchRecords();

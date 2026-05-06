@@ -80,7 +80,7 @@ export default function AdminSettings() {
   const currentMonth = getMonth(new Date()) + 1;
   const currentYear = new Date().getFullYear();
 
-  const role = user?.user_metadata?.role;
+  const role = user?.app_metadata?.role;
 
   // Data Fetching
   const fetchCodes = async () => {

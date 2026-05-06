@@ -41,7 +41,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (user) {
       await logAction({
         userId: user.id,
-        subeAdi: user.user_metadata?.sube || 'Bilinmiyor',
+        subeAdi: user.app_metadata?.sube || 'Bilinmiyor',
         action: 'LOGOUT',
         details: { islem: 'LOGOUT_SUCCESS' }
       });

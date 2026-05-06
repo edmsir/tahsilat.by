@@ -50,7 +50,7 @@ export default function EditRecordModal({ isOpen, onClose, record, onSuccess, is
         const { error } = await supabase.from('talepler').insert({
           kayit_id: record.id,
           tip: 'DUZENLEME',
-          sube_adi: user?.user_metadata?.sube,
+          sube_adi: user?.app_metadata?.sube,
           talep_eden_id: user?.id,
           durum: 'BEKLEMEDE',
           yeni_veri: {
@@ -63,7 +63,7 @@ export default function EditRecordModal({ isOpen, onClose, record, onSuccess, is
         alert('Düzenleme talebi başarıyla iletildi. Admin onayından sonra güncellenecektir.');
       } else {
         // Direct admin edit logic (kayitlar table)
-        const { error } = await supabase
+        const { error: updateError } = await supabase
           .from('kayitlar')
           .update({
             musteri_adi: formData.musteri_adi,
@@ -71,17 +71,21 @@ export default function EditRecordModal({ isOpen, onClose, record, onSuccess, is
             banka: formData.banka,
             cekim_subesi: formData.cekim_subesi,
             taksit: parseInt(formData.taksit),
-            notlar: formData.notlar,
-            updated_at: new Date().toISOString()
+            notlar: formData.notlar
           })
           .eq('id', record.id);
-        if (error) throw error;
+
+        if (updateError) {
+          console.error('Admin Güncelleme Hatası Detay:', updateError);
+          throw updateError;
+        }
       }
       
       onSuccess();
       onClose();
     } catch (error: any) {
-      alert('İşlem başarısız: ' + error.message);
+      console.error('İşlem Hatası:', error);
+      alert('İşlem başarısız: ' + (error.message || 'Bilinmeyen hata'));
     } finally {
       setLoading(false);
     }
