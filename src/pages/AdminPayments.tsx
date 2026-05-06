@@ -265,25 +265,46 @@ export default function AdminPayments() {
   // fetchData was moved above
 
   const handleUpdateBank = async (bank: BankSettings) => {
-    if (!bank.id) return;
+    console.log('Güncelleme isteği gönderiliyor:', bank);
+    if (!bank.id) {
+      console.error('Hata: Banka ID bulunamadı!');
+      return;
+    }
     setSaving(bank.id);
     try {
-      const { error } = await supabase
+      const updateData = {
+        vade_gun: bank.vade_gun,
+        komisyon_oranlari: bank.komisyon_oranlari,
+        blokaj_gunleri: bank.blokaj_gunleri || {},
+        odeme_tipi: bank.odeme_tipi || 'TAKSITLI',
+        is_active: bank.is_active ?? true,
+        holiday_calculation_active: bank.holiday_calculation_active ?? true,
+        baslangic_tarihi: bank.baslangic_tarihi,
+        bitis_tarihi: bank.bitis_tarihi || null,
+        updated_at: new Date().toISOString()
+      };
+      
+      console.log('Gönderilen ham veri:', updateData);
+
+      const { data, error, status } = await supabase
         .from('banka_ayarlari')
-        .update({
-          vade_gun: bank.vade_gun,
-          komisyon_oranlari: bank.komisyon_oranlari,
-          blokaj_gunleri: bank.blokaj_gunleri || {},
-          is_active: bank.is_active ?? true,
-          holiday_calculation_active: bank.holiday_calculation_active ?? true,
-          baslangic_tarihi: bank.baslangic_tarihi,
-          bitis_tarihi: bank.bitis_tarihi || null,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', bank.id);
+        .update(updateData)
+        .eq('id', bank.id)
+        .select();
+
+      console.log('Supabase yanıtı:', { data, error, status });
+
       if (error) throw error;
-      fetchData();
+      
+      if (!data || data.length === 0) {
+        throw new Error('Veri güncellenemedi, 0 satır etkilendi. RLS yetkisi veya ID hatalı olabilir.');
+      }
+
+      console.log('Güncelleme başarılı, veriler tazeleniyor...');
+      await fetchData();
+      alert('Değişiklikler başarıyla kaydedildi.');
     } catch (error: unknown) {
+      console.error('Güncelleme hatası detayları:', error);
       const message = error instanceof Error ? error.message : 'Bilinmeyen bir hata oluştu';
       alert('Hata: ' + message);
     } finally {
@@ -400,6 +421,7 @@ export default function AdminPayments() {
             baslangic_tarihi: startDate,
             bitis_tarihi: null,
             vade_gun: 30,
+            odeme_tipi: 'TAKSITLI',
             komisyon_oranlari: { '1': 0, '2': 0, '3': 0, '4': 0, '5': 0, '6': 0, '7': 0, '8': 0, '9': 0, '10': 0, '11': 0, '12': 0 },
             blokaj_gunleri: { '1': 30 },
             is_active: true,
@@ -1473,6 +1495,7 @@ export default function AdminPayments() {
                                     baslangic_tarihi: startDate,
                                     bitis_tarihi: null,
                                     vade_gun: activeAgreement.vade_gun,
+                                    odeme_tipi: activeAgreement.odeme_tipi,
                                     komisyon_oranlari: { ...activeAgreement.komisyon_oranlari }
                                   };
                                   handleCreateNewAgreement(newAgreement);
@@ -1537,11 +1560,23 @@ export default function AdminPayments() {
                                         className="bg-muted/40 border border-border/50 rounded-lg px-2 py-1 text-xs font-bold text-foreground w-20 focus:ring-1 focus:ring-primary/50 outline-none"
                                       />
                                     </div>
+                                    <div className="flex flex-col">
+                                      <span className="text-[9px] text-muted-foreground font-bold uppercase">Ödeme Tipi</span>
+                                      <select
+                                        value={agreement.odeme_tipi || 'TAKSITLI'}
+                                        onChange={(e) => setBanks(prev => prev.map(b => b.id === agreement.id ? {...b, odeme_tipi: e.target.value as any} : b))}
+                                        className="bg-muted/40 border border-border/50 rounded-lg px-2 py-1 text-xs font-bold text-foreground focus:ring-1 focus:ring-primary/50 outline-none"
+                                      >
+                                        <option value="TAKSITLI">Taksitli Ödeme</option>
+                                        <option value="TEK_SEFER">Tek Seferde (Vade Sonunda)</option>
+                                      </select>
+                                    </div>
                                   </div>
 
                                   <div className="flex items-center gap-2 ml-auto">
                                     <button
                                       onClick={() => {
+                                        console.log('Kaydet butonuna tıklandı! Gönderilecek veri:', agreement);
                                         // Overlap check
                                         const others = sortedHistory.filter(h => h.id !== agreement.id);
                                         const hasOverlap = others.some(h => {
@@ -1554,6 +1589,7 @@ export default function AdminPayments() {
                                           return aStart <= hEndEff && aEndEff >= hStart;
                                         });
                                         if (hasOverlap) {
+                                          console.warn('Tarih çakışması tespit edildi!');
                                           alert('Hata: Bu anlaşmanın tarihleri başka bir anlaşmayla çakışıyor. Lütfen başa baş (bitiş+1=başlangıç) tarihler kullanın.');
                                           return;
                                         }

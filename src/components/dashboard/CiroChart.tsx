@@ -30,7 +30,7 @@ export default function CiroChart({ records }: CiroChartProps) {
       </div>
       
       <div className="flex-1 w-full">
-        <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={300}>
+        <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={100}>
           <BarChart data={data} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255,255,255,0.05)" />
             <XAxis 

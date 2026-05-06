@@ -76,6 +76,7 @@ export interface BankSettings {
   vade_gun: number;
   komisyon_oranlari: Record<string, number>;
   blokaj_gunleri?: Record<string, number>;
+  odeme_tipi?: 'TAKSITLI' | 'TEK_SEFER';
   is_active?: boolean;
   holiday_calculation_active?: boolean;
   created_at?: string;

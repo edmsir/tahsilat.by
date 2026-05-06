@@ -89,8 +89,18 @@ export function generatePaymentSchedule(
 
     const instNet = Number((instGross - instComm).toFixed(2));
     
-    // Blokaj Günü Hesaplama (Kümülatif Mantık)
-    const offset = Number(blokajlar[i.toString()] ?? blokajlar[i] ?? (i === 1 ? (settings.vade_gun || 30) : 30));
+    // Blokaj Günü Hesaplama
+    // TAKSİTLİ: Her taksit için ayrı vade (Varsayılan 30 gün arayla)
+    // TEK_SEFER: Tüm taksitler tek bir tarihte (vade_gun kadar sonra) yatar
+    const isSinglePayout = settings.odeme_tipi === 'TEK_SEFER';
+    
+    let offset: number;
+    if (isSinglePayout) {
+      // Tek seferde ödemede sadece ilk adımda vade_gun kadar eklenir, diğerlerinde eklenmez
+      offset = i === 1 ? (settings.vade_gun || 0) : 0;
+    } else {
+      offset = Number(blokajlar[i.toString()] ?? blokajlar[i] ?? (i === 1 ? (settings.vade_gun || 0) : 30));
+    }
     
     if (isNaN(offset)) {
        throw new Error(`${record.banka} için ${i}. taksit vade günü (vade_gun) ayarı hatalı.`);

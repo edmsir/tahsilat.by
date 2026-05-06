@@ -2,8 +2,8 @@ import { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../hooks/useAuth';
 import type { Sube, BankSettings } from '../../types';
-import { Loader2, X, CheckCircle2, AlertCircle, FileSpreadsheet, ClipboardPaste, Info } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { Loader2, X, CheckCircle2, AlertCircle, FileSpreadsheet, ClipboardPaste, Info, Trash2 } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { generatePaymentSchedule } from '../../utils/paymentCalculator';
 import { logAction } from '../../utils/logger';
 import { isWithinInterval, parseISO } from 'date-fns';
@@ -18,11 +18,13 @@ interface BulkImportModalProps {
 interface GroupedData {
   id: string; 
   banka: string;
+  rawBankaName: string;
   taksit: number | null; 
   tutar: number;
   count: number;
   tarih: string;
   sube: Sube;
+  cekimSube: Sube;
   originalLineIndices: number[]; 
   originalRawData: string[];
   isInstallmentValid?: boolean;
@@ -57,6 +59,8 @@ export default function BulkImportModal({ isOpen, onClose, onSuccess, currentSub
   // Wizard Step State
   const [step, setStep] = useState<'paste' | 'map' | 'review'>('paste');
   const [allBankSettings, setAllBankSettings] = useState<BankSettings[]>([]);
+  const [editingBankSetting, setEditingBankSetting] = useState<BankSettings | null>(null);
+  const [showOnlyErrors, setShowOnlyErrors] = useState(false);
 
   // Fetch Bank Settings for Validation
   useEffect(() => {
@@ -193,7 +197,7 @@ export default function BulkImportModal({ isOpen, onClose, onSuccess, currentSub
     }
   };
 
-  const processWithMapping = (data: string[][], mapping: ColumnMapping) => {
+  const processWithMapping = (data: string[][], mapping: ColumnMapping, overrideSettings?: BankSettings[]) => {
     try {
       const groups: Record<string, GroupedData> = {};
       const startIdx = (data[0].some(h => h.includes('BANKA') || h.includes('TUTAR'))) ? 1 : 0;
@@ -214,14 +218,16 @@ export default function BulkImportModal({ isOpen, onClose, onSuccess, currentSub
           const taksit = extractInstallment(aciklamaMetni);
           const rowDate = parseExcelDate(tarihMetni) || importDate;
           const rowSube = isAdmin ? (detectSube(subeMetni) || importSube) : importSube;
+          const cekimSube = detectSube(bankaMetni) || rowSube;
 
           // BANKE BAZLI TAKSIT KONTROLÜ
           let isInstallmentValid = true;
           let unsupportedMessage = '';
           
           if (taksit !== null) {
-              const activeSetting = allBankSettings.find(s => 
-                  s.banka_adi === bankaEnum && 
+              const settingsToUse = overrideSettings || allBankSettings;
+              const activeSetting = settingsToUse.find(s => 
+                  ((s.banka_adi === bankaMetni) || (s.banka_adi === bankaEnum)) && 
                   isWithinInterval(parseISO(rowDate), {
                       start: parseISO(s.baslangic_tarihi),
                       end: s.bitis_tarihi ? parseISO(s.bitis_tarihi) : parseISO('2099-12-31')
@@ -241,17 +247,19 @@ export default function BulkImportModal({ isOpen, onClose, onSuccess, currentSub
           // EĞER TAKSİT GEÇERSİZSE VEYA BELİRSİZSE GRUPLAMA YAPMA
           const key = (taksit === null || !isInstallmentValid)
             ? `unclear_${i}_${bankaEnum}` 
-            : `${bankaEnum}_${taksit}_${rowDate}_${rowSube}`;
+            : `${bankaEnum}_${taksit}_${rowDate}_${rowSube}_${cekimSube}`;
 
           if (!groups[key]) {
             groups[key] = { 
                 id: key, 
                 banka: bankaEnum, 
+                rawBankaName: bankaMetni,
                 taksit: isInstallmentValid ? taksit : null, 
                 tutar: 0, 
                 count: 0,
                 tarih: rowDate, 
                 sube: rowSube,
+                cekimSube: cekimSube,
                 originalLineIndices: [],
                 originalRawData: [],
                 isInstallmentValid,
@@ -307,19 +315,22 @@ export default function BulkImportModal({ isOpen, onClose, onSuccess, currentSub
 
       // 1. Prepare Records for Bulk Insert
       const recordsToInsert = groupedRecords.map(group => {
-        const musteriAdi = `${group.banka.split(' ')[0]} ${group.taksit} TAKSİT TOPLU`;
-        const finalSube = isAdmin ? group.sube : currentSube;
-        return {
-          tarih: group.tarih,
-          musteri_adi: musteriAdi,
-          banka: group.banka,
-          cekim_subesi: finalSube,
-          sube_adi: finalSube,
-          tutar: group.tutar,
-          taksit: group.taksit,
-          user_id: user?.id,
-          notlar: `Excel'den Toplu Aktarım (${group.count} işlem)`
-        };
+          // Açıklamaları birleştir (Tekrar edenleri temizle)
+          const uniqueDescs = Array.from(new Set(group.originalRawData))
+            .filter(d => d && typeof d === 'string' && d.trim().length > 0)
+            .join(', ');
+
+          return {
+            tarih: group.tarih,
+            musteri_adi: 'TOPLU AKTARIM',
+            banka: group.banka,
+            cekim_subesi: group.cekimSube,
+            sube_adi: group.sube,
+            tutar: group.tutar,
+            taksit: group.taksit,
+            user_id: user?.id,
+            notlar: `[${uniqueDescs}] - Toplu Aktarım (${group.count} işlem)`
+          };
       });
 
       console.log('Aktarım Başlıyor. İlk Kayıt Örneği:', recordsToInsert[0]);
@@ -412,6 +423,47 @@ export default function BulkImportModal({ isOpen, onClose, onSuccess, currentSub
        console.error('Aktarım hatası detay:', err);
        const msg = err.message || 'Bilinmeyen bir hata';
        setError(`Aktarım Durduruldu: ${msg}`);
+    } finally {
+      setProcessLoading(false);
+    }
+  };
+
+  const handleUpdateBankSetting = async (updated: BankSettings | null) => {
+    if (!updated) return;
+    console.log('Hızlı Banka Güncelleme İsteği:', updated);
+    setProcessLoading(true);
+    setProgressMsg('Banka ayarları güncelleniyor...');
+    
+    try {
+      const { data, error, status } = await supabase
+        .from('banka_ayarlari')
+        .update({ 
+          vade_gun: updated.vade_gun,
+          komisyon_oranlari: updated.komisyon_oranlari,
+          blokaj_gunleri: updated.blokaj_gunleri,
+          odeme_tipi: updated.odeme_tipi,
+          is_active: updated.is_active
+        })
+        .eq('id', updated.id)
+        .select();
+
+      console.log('Supabase Hızlı Yanıt:', { data, error, status });
+
+      if (error) throw error;
+
+      // Yerel durumu güncelle
+      const newSettings = allBankSettings.map(s => s.id === updated.id ? updated : s);
+      setAllBankSettings(newSettings);
+      setEditingBankSetting(null);
+      
+      console.log('Veriler güncellendi, Excel tekrar analiz ediliyor...');
+      processWithMapping(rawLines, currentMapping, newSettings);
+      alert('Banka ayarları başarıyla güncellendi!');
+    } catch (err: any) {
+      console.error('Hızlı banka güncelleme hatası:', err);
+      const errorMsg = err.message || 'Bilinmeyen bir hata oluştu';
+      setError(`Güncelleme hatası: ${errorMsg}`);
+      alert(`Güncelleme başarısız: ${errorMsg}`);
     } finally {
       setProcessLoading(false);
     }
@@ -638,7 +690,15 @@ export default function BulkImportModal({ isOpen, onClose, onSuccess, currentSub
                             <div className="text-center sm:text-left">
                                 <p className="text-[10px] text-primary font-black uppercase tracking-[0.3em] mb-2 opacity-70 italic">Analiz Özeti</p>
                                 <h3 className="text-4xl font-black text-white tracking-tighter leading-none italic uppercase">AKTARIŞ KONTROLÜ</h3>
-                                <p className="text-sm text-gray-500 font-bold uppercase tracking-widest mt-2">{groupedRecords.length} Gruplanmış İşlem</p>
+                                <div className="flex items-center gap-4 mt-2">
+                                    <p className="text-sm text-gray-500 font-bold uppercase tracking-widest">{groupedRecords.length} Gruplanmış İşlem</p>
+                                    <button 
+                                        onClick={() => setShowOnlyErrors(!showOnlyErrors)}
+                                        className={`px-4 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border ${showOnlyErrors ? 'bg-red-500 text-white border-red-400 shadow-lg shadow-red-500/20' : 'bg-white/5 text-white/40 border-white/10 hover:bg-white/10'}`}
+                                    >
+                                        {showOnlyErrors ? 'Tümünü Göster' : 'Sadece Hataları Göster'}
+                                    </button>
+                                </div>
                             </div>
                             <div className="flex flex-wrap justify-center sm:justify-end gap-10">
                                 <div className="text-right">
@@ -667,7 +727,9 @@ export default function BulkImportModal({ isOpen, onClose, onSuccess, currentSub
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-white/5">
-                                {groupedRecords.map((g) => (
+                                {groupedRecords
+                                  .filter(g => !showOnlyErrors || g.taksit === null)
+                                  .map((g) => (
                                     <tr key={g.id} className="hover:bg-white/[0.03] transition-all group">
                                         <td className="px-10 py-8">
                                             <div className="flex flex-wrap gap-1.5">
@@ -696,7 +758,36 @@ export default function BulkImportModal({ isOpen, onClose, onSuccess, currentSub
                                                     </div>
                                                     
                                                     {g.unsupportedMessage && (
-                                                        <p className="text-[10px] text-orange-200/70 font-bold mb-3 italic">"{g.unsupportedMessage}"</p>
+                                                        <div className="flex flex-col items-center gap-2 mb-3">
+                                                            <p className="text-[10px] text-orange-200/70 font-bold italic">"{g.unsupportedMessage}"</p>
+                                                            <button
+                                                                onClick={() => {
+                                                                    console.log('Düzenle butona tıklandı. Aranan banka:', g.rawBankaName, 'Tarih:', g.tarih);
+                                                                    console.log('Mevcut tüm banka ayarları:', allBankSettings);
+
+                                                                    const activeSetting = allBankSettings.find(s => {
+                                                                        // Önce tam isim araması yap, bulamazsan genel banka adıyla (bankaEnum) ara
+                                                                        const nameMatch = (s.banka_adi === g.rawBankaName) || (s.banka_adi === g.banka);
+                                                                        const dateMatch = isWithinInterval(parseISO(g.tarih), {
+                                                                            start: parseISO(s.baslangic_tarihi),
+                                                                            end: s.bitis_tarihi ? parseISO(s.bitis_tarihi) : parseISO('2099-12-31')
+                                                                        });
+                                                                        return nameMatch && dateMatch;
+                                                                    });
+
+                                                                    if (activeSetting) {
+                                                                        console.log('Eşleşen ayar bulundu, modal açılıyor:', activeSetting);
+                                                                        setEditingBankSetting(activeSetting);
+                                                                    } else {
+                                                                        console.error('UYARI: Veritabanında bu isim ve tarihle eşleşen bir banka ayarı bulunamadı!');
+                                                                        alert(`Veritabanında "${g.rawBankaName}" ismiyle bu tarih aralığında bir anlaşma bulunamadı. Lütfen Admin -> Ödemeler sayfasından bu bankanın ismini ve tarihlerini kontrol edin.`);
+                                                                    }
+                                                                }}
+                                                                className="px-3 py-1 bg-orange-500 hover:bg-orange-600 text-white text-[9px] font-black rounded-lg transition-all shadow-lg shadow-orange-500/20"
+                                                            >
+                                                                BANKA AYARLARINI DÜZENLE
+                                                            </button>
+                                                        </div>
                                                     )}
                                                     
                                                     {!g.unsupportedMessage && (
@@ -709,13 +800,13 @@ export default function BulkImportModal({ isOpen, onClose, onSuccess, currentSub
                                                     >
                                                         <option value="" className="bg-slate-900 text-white">LÜTFEN SEÇİN</option>
                                                         {(allBankSettings.find(s => 
-                                                            s.banka_adi === g.banka && 
+                                                            s.banka_adi === g.rawBankaName && 
                                                             isWithinInterval(parseISO(g.tarih), {
                                                                 start: parseISO(s.baslangic_tarihi),
                                                                 end: s.bitis_tarihi ? parseISO(s.bitis_tarihi) : parseISO('2099-12-31')
                                                             })
                                                         )?.komisyon_oranlari ? Object.keys(allBankSettings.find(s => 
-                                                            s.banka_adi === g.banka && 
+                                                            s.banka_adi === g.rawBankaName && 
                                                             isWithinInterval(parseISO(g.tarih), {
                                                                 start: parseISO(s.baslangic_tarihi),
                                                                 end: s.bitis_tarihi ? parseISO(s.bitis_tarihi) : parseISO('2099-12-31')
@@ -804,6 +895,134 @@ export default function BulkImportModal({ isOpen, onClose, onSuccess, currentSub
             </div>
         </div>
       </motion.div>
+
+      {/* QUICK BANK EDIT MODAL */}
+      <AnimatePresence>
+        {editingBankSetting && (
+          <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              className="glassmorphism w-full max-w-lg rounded-[32px] border border-white/10 p-8 shadow-2xl"
+            >
+              <div className="flex justify-between items-center mb-6">
+                <div>
+                  <h3 className="text-xl font-black text-white italic uppercase tracking-tight">BANKA YAPILANDIRMA</h3>
+                  <p className="text-[10px] text-primary font-black uppercase tracking-widest">{editingBankSetting.banka_adi}</p>
+                </div>
+                <button onClick={() => setEditingBankSetting(null)} className="p-2 hover:bg-white/10 rounded-xl transition-colors">
+                  <X className="w-5 h-5 text-white/50" />
+                </button>
+              </div>
+
+              <div className="space-y-4 max-h-[400px] overflow-y-auto custom-scrollbar pr-2">
+                <table className="w-full text-left text-xs">
+                  <thead className="text-white/30 uppercase font-black text-[9px] tracking-widest">
+                    <tr className="border-b border-white/5">
+                      <th className="py-2">Taksit</th>
+                      <th className="py-2">Komisyon (%)</th>
+                      <th className="py-2">Blokaj (Gün)</th>
+                      <th className="py-2 text-right">Sil</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5">
+                    {Object.keys(editingBankSetting.komisyon_oranlari).map((t) => (
+                      <tr key={t} className="group hover:bg-white/5">
+                        <td className="py-3 font-black text-white">{t === '1' ? 'PEŞİN' : `${t} Taksit`}</td>
+                        <td className="py-3">
+                          <input 
+                            type="number" 
+                            step="0.01"
+                            value={editingBankSetting.komisyon_oranlari[t]}
+                            onChange={(e) => {
+                              const val = parseFloat(e.target.value);
+                              setEditingBankSetting({
+                                ...editingBankSetting,
+                                komisyon_oranlari: { ...editingBankSetting.komisyon_oranlari, [t]: val }
+                              });
+                            }}
+                            className="w-16 bg-black/40 border border-white/10 rounded-lg px-2 py-1 text-center text-primary font-bold focus:outline-none focus:border-primary/50"
+                          />
+                        </td>
+                        <td className="py-3">
+                           <input 
+                            type="number" 
+                            value={editingBankSetting.blokaj_gunleri?.[t] || 0}
+                            onChange={(e) => {
+                              const val = parseInt(e.target.value);
+                              setEditingBankSetting({
+                                ...editingBankSetting,
+                                blokaj_gunleri: { ...(editingBankSetting.blokaj_gunleri || {}), [t]: val }
+                              });
+                            }}
+                            className="w-16 bg-black/40 border border-white/10 rounded-lg px-2 py-1 text-center text-white font-bold focus:outline-none focus:border-white/20"
+                          />
+                        </td>
+                        <td className="py-3 text-right">
+                          <button 
+                            onClick={() => {
+                              const newRates = { ...editingBankSetting.komisyon_oranlari };
+                              const newBlokaj = { ...(editingBankSetting.blokaj_gunleri || {}) };
+                              delete newRates[t];
+                              delete newBlokaj[t];
+                              setEditingBankSetting({ ...editingBankSetting, komisyon_oranlari: newRates, blokaj_gunleri: newBlokaj });
+                            }}
+                            className="p-1 hover:text-red-500 transition-colors"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="mt-6 p-4 bg-primary/5 border border-primary/20 rounded-2xl">
+                <p className="text-[9px] font-black text-primary uppercase tracking-widest mb-3">Yeni Taksit Tanımla</p>
+                <div className="flex gap-3">
+                  <input id="new-taksit" type="number" placeholder="Taksit" className="flex-1 bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white" />
+                  <input id="new-komisyon" type="number" step="0.01" placeholder="Komisyon %" className="flex-1 bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white" />
+                  <button 
+                    onClick={() => {
+                      const t = (document.getElementById('new-taksit') as HTMLInputElement).value;
+                      const k = (document.getElementById('new-komisyon') as HTMLInputElement).value;
+                      if (t && k) {
+                        setEditingBankSetting({
+                          ...editingBankSetting,
+                          komisyon_oranlari: { ...editingBankSetting.komisyon_oranlari, [t]: parseFloat(k) },
+                          blokaj_gunleri: { ...(editingBankSetting.blokaj_gunleri || {}), [t]: 30 }
+                        });
+                        (document.getElementById('new-taksit') as HTMLInputElement).value = '';
+                        (document.getElementById('new-komisyon') as HTMLInputElement).value = '';
+                      }
+                    }}
+                    className="bg-primary px-4 py-2 rounded-xl text-xs font-black text-white hover:bg-primary/90 transition-all"
+                  >
+                    EKLE
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-8 flex gap-4">
+                <button 
+                  onClick={() => setEditingBankSetting(null)}
+                  className="flex-1 py-4 rounded-2xl bg-white/5 border border-white/10 text-white/50 font-black text-[10px] uppercase tracking-widest hover:bg-white/10 transition-all"
+                >
+                  İPTAL
+                </button>
+                <button 
+                  onClick={() => handleUpdateBankSetting(editingBankSetting)}
+                  className="flex-1 py-4 rounded-2xl bg-primary text-white font-black text-[10px] uppercase tracking-widest shadow-lg shadow-primary/20 hover:scale-[1.02] active:scale-95 transition-all"
+                >
+                  AYARLARI KAYDET
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

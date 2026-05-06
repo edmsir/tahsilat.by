@@ -159,6 +159,25 @@ export default function RecordForm({ onSuccess, initialData, onCancel, isRequest
     fetchBankSettings();
   }, [selectedBanka, selectedTarih, setValue]);
 
+  // Auto-detect cekim_subesi from bank name
+  useEffect(() => {
+    if (selectedBanka && !isEditing) {
+      const upper = selectedBanka.toUpperCase();
+      let detectedSube: Sube | null = null;
+      if (upper.includes('MERKEZ')) detectedSube = 'MERKEZ';
+      else if (upper.includes('ANKARA')) detectedSube = 'ANKARA';
+      else if (upper.includes('BURSA')) detectedSube = 'BURSA';
+      else if (upper.includes('BAYRAMPAŞA') || upper.includes('B.PAŞA')) detectedSube = 'BAYRAMPAŞA';
+      else if (upper.includes('MODOKO')) detectedSube = 'MODOKO';
+      else if (upper.includes('İZMİR') || upper.includes('IZMIR')) detectedSube = 'İZMİR';
+      else if (upper.includes('MALZEME')) detectedSube = 'MALZEME';
+
+      if (detectedSube) {
+        setValue('cekim_subesi', detectedSube);
+      }
+    }
+  }, [selectedBanka, setValue, isEditing]);
+
   useEffect(() => {
     if (initialData) {
       reset({
