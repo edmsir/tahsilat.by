@@ -1,12 +1,5 @@
 import { addDays, format, isWeekend, parseISO } from 'date-fns';
-
-export interface BankSettings {
-  banka_adi: string;
-  vade_gun: number;
-  komisyon_oranlari: Record<string, number>;
-  blokaj_gunleri?: Record<string, number>;
-  holiday_calculation_active?: boolean;
-}
+import type { BankSettings } from '../types';
 
 export interface PaymentInstallment {
   taksit_no: number;
