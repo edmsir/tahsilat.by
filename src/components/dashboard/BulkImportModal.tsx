@@ -110,6 +110,8 @@ export default function BulkImportModal({ isOpen, onClose, onSuccess, currentSub
     if (upper.includes('İŞ') || upper.includes('IS BANK')) return 'İŞ BANKASI POS';
     if (upper.includes('AKBANK')) return 'AKBANK POS';
     if (upper.includes('GARANT')) return 'GARANTİ POS';
+    if (upper.includes('ALBARAKA')) return 'ALBARAKA POS';
+    if (upper.includes('VAKIF')) return 'VAKIFBANK POS';
     return 'NAKİT'; 
   };
 
@@ -136,13 +138,14 @@ export default function BulkImportModal({ isOpen, onClose, onSuccess, currentSub
 
   const detectSube = (subeStr: string): Sube | null => {
     if (!subeStr) return null;
-    const upper = subeStr.toUpperCase();
+    const upper = subeStr.toUpperCase().replace(/İ/g, 'I').replace(/Ş/g, 'S').replace(/Ğ/g, 'G').replace(/Ü/g, 'U').replace(/Ç/g, 'C').replace(/Ö/g, 'O');
+    
     if (upper.includes('MERKEZ')) return 'MERKEZ';
     if (upper.includes('ANKARA')) return 'ANKARA';
     if (upper.includes('BURSA')) return 'BURSA';
-    if (upper.includes('BAYRAMPAŞA') || upper.includes('B.PAŞA')) return 'BAYRAMPAŞA';
+    if (upper.includes('BAYRAMPASA') || upper.includes('B.PASA') || upper.includes('BAYRAMPAŞA')) return 'BAYRAMPAŞA';
     if (upper.includes('MODOKO')) return 'MODOKO';
-    if (upper.includes('İZMİR') || upper.includes('IZMIR')) return 'İZMİR';
+    if (upper.includes('IZMIR') || upper.includes('İZMİR')) return 'İZMİR';
     if (upper.includes('MALZEME')) return 'MALZEME';
     return null;
   };
@@ -719,11 +722,12 @@ export default function BulkImportModal({ isOpen, onClose, onSuccess, currentSub
                         <table className="w-full text-left table-fixed border-collapse">
                             <thead className="bg-white/5 text-[10px] uppercase font-black text-white/30 tracking-[0.25em]">
                                 <tr>
-                                    <th className="px-10 py-8 w-[12%] italic">SIRA (#)</th>
-                                    <th className="px-10 py-8 w-[18%]">TARİH / ŞUBE</th>
-                                    <th className="px-10 py-8 w-[22%]">ÖDEME KANALI</th>
-                                    <th className="px-10 py-8 w-[25%] text-center">TAKSİT & DURUM</th>
-                                    <th className="px-10 py-8 w-[23%] text-right italic">TOPLAM TUTAR</th>
+                                    <th className="px-10 py-8 w-[10%] italic">SIRA (#)</th>
+                                    <th className="px-10 py-8 w-[15%]">İŞLEM TARİHİ</th>
+                                    <th className="px-10 py-8 w-[18%]">KART ŞUBESİ</th>
+                                    <th className="px-10 py-8 w-[18%]">ÇEKİM ŞUBESİ</th>
+                                    <th className="px-10 py-8 w-[18%]">BANKA / POS</th>
+                                    <th className="px-10 py-8 w-[21%] text-right italic">TOPLAM TUTAR</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-white/5">
@@ -740,98 +744,59 @@ export default function BulkImportModal({ isOpen, onClose, onSuccess, currentSub
                                         </td>
                                         <td className="px-10 py-8">
                                             <div className="text-sm font-black text-white tracking-widest">{new Date(g.tarih).toLocaleDateString('tr-TR')}</div>
-                                            <div className="text-[10px] text-primary/60 font-black uppercase mt-1 tracking-tighter italic">{g.sube}</div>
                                         </td>
                                         <td className="px-10 py-8">
-                                            <span className={`inline-flex items-center px-4 py-2 rounded-2xl text-[10px] font-black uppercase tracking-widest border shadow-lg ${getBankColor(g.banka)}`}>
-                                                {g.banka}
-                                            </span>
+                                            <div className="flex flex-col">
+                                                <span className="text-[10px] text-white/40 font-black uppercase tracking-widest mb-1">Müşteri Şubesi</span>
+                                                <div className="text-xs font-black text-primary uppercase tracking-tighter italic">{g.sube}</div>
+                                            </div>
                                         </td>
-                                        <td className="px-10 py-8 text-center">
-                                            {g.taksit === null ? (
-                                                <div className={`border-2 rounded-[28px] p-4 transition-all ${g.unsupportedMessage ? 'bg-orange-500/5 border-orange-500/30 ring-2 ring-orange-500/20' : 'bg-red-500/5 border-red-500/20 animate-pulse-slow'}`}>
-                                                    <div className="flex items-center justify-center gap-2 mb-3">
-                                                        {g.unsupportedMessage ? <Info className="w-4 h-4 text-orange-400" /> : <AlertCircle className="w-4 h-4 text-red-400" />}
-                                                        <p className={`text-[9px] font-black uppercase tracking-widest ${g.unsupportedMessage ? 'text-orange-400' : 'text-red-400'}`}>
-                                                            {g.unsupportedMessage ? 'GEÇERSİZ TAKSİT!' : 'SİSTEM ANLAYAMADI!'}
-                                                        </p>
-                                                    </div>
-                                                    
-                                                    {g.unsupportedMessage && (
-                                                        <div className="flex flex-col items-center gap-2 mb-3">
-                                                            <p className="text-[10px] text-orange-200/70 font-bold italic">"{g.unsupportedMessage}"</p>
-                                                            <button
-                                                                onClick={() => {
-                                                                    console.log('Düzenle butona tıklandı. Aranan banka:', g.rawBankaName, 'Tarih:', g.tarih);
-                                                                    console.log('Mevcut tüm banka ayarları:', allBankSettings);
-
-                                                                    const activeSetting = allBankSettings.find(s => {
-                                                                        // Önce tam isim araması yap, bulamazsan genel banka adıyla (bankaEnum) ara
-                                                                        const nameMatch = (s.banka_adi === g.rawBankaName) || (s.banka_adi === g.banka);
-                                                                        const dateMatch = isWithinInterval(parseISO(g.tarih), {
-                                                                            start: parseISO(s.baslangic_tarihi),
-                                                                            end: s.bitis_tarihi ? parseISO(s.bitis_tarihi) : parseISO('2099-12-31')
-                                                                        });
-                                                                        return nameMatch && dateMatch;
-                                                                    });
-
-                                                                    if (activeSetting) {
-                                                                        console.log('Eşleşen ayar bulundu, modal açılıyor:', activeSetting);
-                                                                        setEditingBankSetting(activeSetting);
-                                                                    } else {
-                                                                        console.error('UYARI: Veritabanında bu isim ve tarihle eşleşen bir banka ayarı bulunamadı!');
-                                                                        alert(`Veritabanında "${g.rawBankaName}" ismiyle bu tarih aralığında bir anlaşma bulunamadı. Lütfen Admin -> Ödemeler sayfasından bu bankanın ismini ve tarihlerini kontrol edin.`);
-                                                                    }
-                                                                }}
-                                                                className="px-3 py-1 bg-orange-500 hover:bg-orange-600 text-white text-[9px] font-black rounded-lg transition-all shadow-lg shadow-orange-500/20"
-                                                            >
-                                                                BANKA AYARLARINI DÜZENLE
-                                                            </button>
-                                                        </div>
-                                                    )}
-                                                    
-                                                    {!g.unsupportedMessage && (
-                                                        <div className="text-[10px] text-white/40 mb-3 italic">"{g.originalRawData[0]}"</div>
-                                                    )}
-
-                                                    <select
-                                                        onChange={(e) => updateGroupTaksit(g.id, parseInt(e.target.value))}
-                                                        className={`w-full border rounded-xl px-4 py-2 text-[11px] font-black focus:outline-none appearance-none text-center cursor-pointer transition-colors ${g.unsupportedMessage ? 'bg-orange-500/20 border-orange-500/30 text-orange-200 focus:border-orange-500' : 'bg-red-500/20 border-red-500/30 text-red-200 focus:border-red-500'}`}
-                                                    >
-                                                        <option value="" className="bg-slate-900 text-white">LÜTFEN SEÇİN</option>
-                                                        {(allBankSettings.find(s => 
-                                                            s.banka_adi === g.rawBankaName && 
-                                                            isWithinInterval(parseISO(g.tarih), {
-                                                                start: parseISO(s.baslangic_tarihi),
-                                                                end: s.bitis_tarihi ? parseISO(s.bitis_tarihi) : parseISO('2099-12-31')
-                                                            })
-                                                        )?.komisyon_oranlari ? Object.keys(allBankSettings.find(s => 
-                                                            s.banka_adi === g.rawBankaName && 
-                                                            isWithinInterval(parseISO(g.tarih), {
-                                                                start: parseISO(s.baslangic_tarihi),
-                                                                end: s.bitis_tarihi ? parseISO(s.bitis_tarihi) : parseISO('2099-12-31')
-                                                            })
-                                                        )!.komisyon_oranlari).map(Number).sort((a, b) => a - b) : [1,2,3,4,5,6,9,12,18]).map(n => (
-                                                            <option key={n} value={n} className="bg-slate-900 text-white">
-                                                                {n === 1 ? 'TEK ÇEKİM' : `${n} TAKSİT`}
-                                                            </option>
-                                                        ))}
-                                                    </select>
+                                        <td className="px-10 py-8">
+                                            <div className="flex flex-col">
+                                                <span className="text-[10px] text-white/40 font-black uppercase tracking-widest mb-1">POS Şubesi</span>
+                                                <div className={`text-xs font-black uppercase tracking-tighter italic ${g.cekimSube !== g.sube ? 'text-orange-400' : 'text-emerald-400'}`}>
+                                                    {g.cekimSube}
+                                                    {g.cekimSube !== g.sube && <span className="ml-2 text-[8px] bg-orange-500/20 px-1 rounded ring-1 ring-orange-500/30">FARKLI POS</span>}
                                                 </div>
-                                            ) : (
-                                                <div className="inline-flex flex-col items-center">
-                                                    <span className="text-primary/40 text-[9px] font-black tracking-widest mb-1 uppercase">POS İŞLEMİ</span>
-                                                    <span className="bg-primary/10 text-primary border border-primary/20 px-6 py-2 rounded-xl text-xs font-black tracking-[0.1em] shadow-lg shadow-primary/5">
-                                                        {g.taksit} TAKSİT
-                                                    </span>
+                                            </div>
+                                        </td>
+                                        <td className="px-10 py-8">
+                                            <div className="flex flex-col gap-2">
+                                                <div className="flex items-center gap-2">
+                                                  <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest border shadow-lg ${getBankColor(g.banka)}`}>
+                                                      {g.banka}
+                                                  </span>
+                                                  {g.taksit !== null && (
+                                                      <span className="text-[10px] font-black text-white/60">{g.taksit === 1 ? 'TEK ÇEKİM' : `${g.taksit} TAKSİT`}</span>
+                                                  )}
                                                 </div>
-                                            )}
+                                                
+                                                {g.taksit === null && (
+                                                  <div className={`border-2 rounded-2xl p-4 transition-all ${g.unsupportedMessage ? 'bg-orange-500/5 border-orange-500/30' : 'bg-red-500/5 border-red-500/20 animate-pulse-slow'}`}>
+                                                      <div className="flex items-center gap-2 mb-2">
+                                                          {g.unsupportedMessage ? <Info className="w-3 h-3 text-orange-400" /> : <AlertCircle className="w-3 h-3 text-red-400" />}
+                                                          <p className={`text-[9px] font-black uppercase tracking-widest ${g.unsupportedMessage ? 'text-orange-400' : 'text-red-400'}`}>
+                                                              {g.unsupportedMessage ? 'GEÇERSİZ TAKSİT!' : 'TAKSİT BELİRSİZ!'}
+                                                          </p>
+                                                      </div>
+                                                      <select
+                                                          onChange={(e) => updateGroupTaksit(g.id, parseInt(e.target.value))}
+                                                          className={`w-full border rounded-lg px-3 py-2 text-[10px] font-black focus:outline-none appearance-none text-center cursor-pointer ${g.unsupportedMessage ? 'bg-orange-500/20 border-orange-500/30 text-orange-200' : 'bg-red-500/20 border-red-500/30 text-red-200'}`}
+                                                      >
+                                                          <option value="">SEÇİN</option>
+                                                          {[1, 2, 3, 4, 5, 6, 9, 12].map(n => (
+                                                              <option key={n} value={n} className="bg-slate-900 text-white">{n === 1 ? 'PEŞİN' : `${n} TAKSİT`}</option>
+                                                          ))}
+                                                      </select>
+                                                  </div>
+                                                )}
+                                            </div>
                                         </td>
                                         <td className="px-10 py-8 text-right font-black text-primary text-2xl tracking-tighter italic group-hover:scale-105 transition-transform origin-right whitespace-nowrap">
                                             ₺{new Intl.NumberFormat('tr-TR', { minimumFractionDigits: 2 }).format(g.tutar)}
                                         </td>
                                     </tr>
-                                ))}
+                                  ))}
                             </tbody>
                         </table>
                     </div>
